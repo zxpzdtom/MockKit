@@ -1,0 +1,57 @@
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+
+export type DeleteDialogTarget =
+  | { type: "endpoint"; endpointId: string; name: string }
+  | { type: "case"; caseId: string; endpointId: string; name: string }
+  | { type: "bulk"; endpointIds: string[]; count: number };
+
+interface DeleteConfirmDialogProps {
+  onConfirm(): void;
+  onOpenChange(open: boolean): void;
+  target: DeleteDialogTarget | null;
+}
+
+function deleteTitle(target: DeleteDialogTarget) {
+  if (target.type === "case") return "删除返回场景？";
+  if (target.type === "bulk") return "批量删除接口？";
+  return "删除接口？";
+}
+
+function deleteDescription(target: DeleteDialogTarget) {
+  if (target.type === "case") return `确定删除返回场景「${target.name}」吗？`;
+  if (target.type === "bulk") return `确定删除选中的 ${target.count} 个接口吗？`;
+  return `确定删除接口「${target.name}」吗？`;
+}
+
+export function DeleteConfirmDialog({ onConfirm, onOpenChange, target }: DeleteConfirmDialogProps) {
+  return (
+    <Dialog open={Boolean(target)} onOpenChange={(open) => !open && onOpenChange(false)}>
+      <DialogContent className="w-[min(420px,calc(100vw-48px))] bg-[color-mix(in_srgb,var(--panel)_98%,white)] sm:max-w-[420px]">
+        {target ? (
+          <>
+            <DialogHeader className="pr-10">
+              <DialogTitle>{deleteTitle(target)}</DialogTitle>
+              <DialogDescription>{deleteDescription(target)}</DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="[&_[data-variant=destructive]]:bg-[color-mix(in_srgb,var(--danger)_9%,transparent)] [&_[data-variant=destructive]]:text-[var(--danger)] hover:[&_[data-variant=destructive]]:bg-[var(--danger)] hover:[&_[data-variant=destructive]]:text-white">
+              <Button variant="secondary" type="button" onClick={() => onOpenChange(false)}>
+                取消
+              </Button>
+              <Button variant="destructive" type="button" onClick={onConfirm}>
+                删除
+              </Button>
+            </DialogFooter>
+          </>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  );
+}

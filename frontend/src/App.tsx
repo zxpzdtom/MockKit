@@ -1,0 +1,2282 @@
+import { AppSettingsDialog } from "@/components/app-settings-dialog";
+import { AppSidebar } from "@/components/app-sidebar";
+import { CreateGroupDialog } from "@/components/create-group-dialog";
+import { DeleteConfirmDialog, type DeleteDialogTarget } from "@/components/delete-confirm-dialog";
+import { EndpointListPanel } from "@/components/endpoint-list-panel";
+import { ImportCurlDialog } from "@/components/import-curl-dialog";
+import { MainToolbar } from "@/components/main-toolbar";
+import ResponseBodyEditor from "@/components/response-body-editor";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  dialogCloseButtonClass,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Toaster } from "@/components/ui/sonner";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipProvider } from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+import type { FileContents } from "@pierre/diffs/react";
+import {
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  FileJson,
+  FolderClosed,
+  FolderOpen,
+  Loader2,
+  Maximize2,
+  Pencil,
+  Plus,
+  Sparkles,
+  Trash2,
+  WrapText,
+  X,
+} from "lucide-react";
+import type {
+  CSSProperties,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  WheelEvent as ReactWheelEvent,
+} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast as sonnerToast } from "sonner";
+import { formatJson, getJsonStatus } from "./lib/json";
+import { send } from "./lib/native";
+import type {
+  AiPreview,
+  AiProgress,
+  AiSettings,
+  AppTheme,
+  Endpoint,
+  MockCase,
+  NativePayload,
+  Store,
+  UiSettings,
+} from "./types";
+
+const successBody = '{\n  "code": 200,\n  "message": "success",\n  "data": {}\n}';
+const failureBody = '{\n  "code": 500,\n  "message": "server error",\n  "data": null\n}';
+const emptyBody = '{\n  "code": 200,\n  "message": "success",\n  "data": []\n}';
+const defaultAiSettings: AiSettings = {
+  enabled: false,
+  provider: "openrouter",
+  model: "",
+  apiKey: "",
+  apiKeys: {},
+  baseUrl: "",
+};
+const defaultUiSettings: UiSettings = {
+  theme: "mockkit",
+};
+const appThemes = new Set<AppTheme>([
+  "mockkit",
+  "claude",
+  "kodama-grove",
+  "soft-pop",
+  "spotify",
+  "modern-minimal",
+  "violet-bloom",
+  "nature",
+  "retro-arcade",
+  "bubblegum",
+]);
+const nativeDragRegionSelector = "[data-native-drag-region='true']";
+const nativeNoDragSelector = [
+  "button",
+  "input",
+  "textarea",
+  "select",
+  "a",
+  "[role='button']",
+  "[contenteditable='true']",
+  "[data-native-no-drag='true']",
+].join(",");
+const panelLabelClass = "text-[11px] font-[650] uppercase tracking-[0.02em] text-[var(--muted)]";
+const editTriggerClass =
+  "inline-flex size-[18px] min-h-[18px] min-w-[18px] rounded-[7px] text-[color-mix(in_srgb,var(--muted)_76%,var(--text))] opacity-[0.46] align-[-2px] hover:bg-[color-mix(in_srgb,var(--panel-3)_78%,transparent)] hover:text-[var(--text)] hover:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 [&_svg]:size-2.5";
+const editorActionsClass =
+  "flex items-center gap-[5px] [&_[data-slot=button]]:h-7 [&_[data-slot=button]]:rounded-[7px] [&_[data-slot=button]]:border-transparent [&_[data-slot=button]]:bg-[color-mix(in_srgb,var(--panel)_58%,transparent)] [&_[data-slot=button]]:text-[color-mix(in_srgb,var(--text)_82%,var(--muted))] [&_[data-slot=button]]:shadow-none [&_[data-slot=button]]:transition-[background-color,border-color,box-shadow,color,transform] [&_[data-slot=button]]:duration-[120ms] hover:[&_[data-slot=button]]:border-[color-mix(in_srgb,var(--accent)_18%,transparent)] hover:[&_[data-slot=button]]:bg-[color-mix(in_srgb,var(--accent-soft)_42%,var(--panel))] hover:[&_[data-slot=button]]:text-[color-mix(in_srgb,var(--accent)_34%,var(--text))] hover:[&_[data-slot=button]]:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--accent)_7%,transparent)] active:[&_[data-slot=button]]:translate-y-px active:[&_[data-slot=button]]:border-[color-mix(in_srgb,var(--accent)_24%,transparent)] active:[&_[data-slot=button]]:bg-[color-mix(in_srgb,var(--accent-soft)_60%,var(--panel-2))] active:[&_[data-slot=button]]:shadow-[inset_0_1px_1px_rgba(15,23,42,0.08)] [&_[data-slot=button][aria-pressed=true]]:border-[color-mix(in_srgb,var(--accent)_32%,transparent)] [&_[data-slot=button][aria-pressed=true]]:bg-[color-mix(in_srgb,var(--accent-soft)_58%,var(--panel))] [&_[data-slot=button][aria-pressed=true]]:text-[color-mix(in_srgb,var(--accent)_42%,var(--text))] [&_[data-slot=button][aria-pressed=true]]:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--accent)_10%,transparent)]";
+const createId = () => crypto.randomUUID();
+
+function formatDetectedAt(value?: string) {
+  if (!value) return "尚未完成检测";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "刚刚";
+  return `上次检测 ${new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date)}`;
+}
+
+function activeCase(endpoint: Endpoint | null) {
+  if (!endpoint) return null;
+  return endpoint.cases.find((item) => item.id === endpoint.activeCaseId) ?? endpoint.cases[0] ?? null;
+}
+
+function normalizeStore(store: Store) {
+  store.aiSettings = { ...defaultAiSettings, ...(store.aiSettings ?? {}) };
+  store.uiSettings = { ...defaultUiSettings, ...(store.uiSettings ?? {}) };
+  if (!appThemes.has(store.uiSettings.theme)) store.uiSettings.theme = defaultUiSettings.theme;
+  store.aiSettings.apiKeys = { ...(store.aiSettings.apiKeys ?? {}) };
+  if (store.aiSettings.apiKey && !store.aiSettings.apiKeys[store.aiSettings.provider]) {
+    store.aiSettings.apiKeys[store.aiSettings.provider] = store.aiSettings.apiKey;
+  }
+  store.aiSettings.apiKey = store.aiSettings.apiKeys[store.aiSettings.provider] ?? store.aiSettings.apiKey;
+  store.groupPaths = normalizeGroupPaths(store.groupPaths ?? []);
+  for (const endpoint of store.endpoints) {
+    endpoint.enabled = endpoint.enabled !== false;
+    endpoint.groupPath = cleanGroupPath(endpoint.groupPath ?? "") || null;
+    if (!endpoint.activeCaseId || !endpoint.cases.some((item) => item.id === endpoint.activeCaseId)) {
+      endpoint.activeCaseId = endpoint.cases[0]?.id ?? null;
+    }
+  }
+  return store;
+}
+
+function cleanGroupPath(path: string) {
+  return path
+    .split("/")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join("/");
+}
+
+function parseApiKeys(apiKeyText: string) {
+  return [
+    ...new Set(
+      apiKeyText
+        .split(/[,\n]/)
+        .map((key) => key.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+function normalizeGroupPaths(paths: string[]) {
+  return [...new Set(paths.map(cleanGroupPath).filter(Boolean))].sort((left, right) =>
+    left.localeCompare(right),
+  );
+}
+
+function caseFile(endpoint: Endpoint | null, mockCase: MockCase | null): FileContents {
+  return {
+    name: endpoint?.overridePath || "response.json",
+    contents: mockCase?.body || "",
+    lang: "json",
+    cacheKey: `${endpoint?.id ?? "empty"}-${mockCase?.id ?? "empty"}-${mockCase?.body.length ?? 0}`,
+  };
+}
+
+function updateCaseTabsScrollState(element: HTMLElement) {
+  const maxScrollLeft = Math.max(0, element.scrollWidth - element.clientWidth);
+  element.dataset.scrollLeft = element.scrollLeft > 1 ? "true" : "";
+  element.dataset.scrollRight = element.scrollLeft < maxScrollLeft - 1 ? "true" : "";
+}
+
+function uniqueOverridePath(basePath: string, endpoints: Endpoint[]) {
+  const usedPaths = new Set(endpoints.map((item) => item.overridePath));
+  if (!usedPaths.has(basePath)) return basePath;
+
+  const dotIndex = basePath.lastIndexOf(".");
+  const slashIndex = basePath.lastIndexOf("/");
+  const hasExtension = dotIndex > slashIndex;
+  const stem = hasExtension ? basePath.slice(0, dotIndex) : basePath;
+  const extension = hasExtension ? basePath.slice(dotIndex) : "";
+
+  for (let index = 2; ; index += 1) {
+    const candidate = `${stem}-${index}${extension}`;
+    if (!usedPaths.has(candidate)) return candidate;
+  }
+}
+
+interface TreeNode {
+  id: string;
+  type: "directory" | "file";
+  label: string;
+  path: string;
+  count: number;
+  depth: number;
+  custom: boolean;
+  endpointId?: string;
+  children: TreeNode[];
+}
+
+type DirectoryViewMode = "tree" | "flat";
+
+interface CompactTreeNode extends TreeNode {
+  children: CompactTreeNode[];
+}
+
+type DeleteTarget = DeleteDialogTarget;
+
+function buildDirectoryTree(endpoints: Endpoint[], groupPaths: string[] = []) {
+  const root: TreeNode = {
+    id: "root",
+    type: "directory",
+    label: "Overrides 根目录",
+    path: "",
+    count: endpoints.length,
+    depth: 0,
+    custom: false,
+    children: [],
+  };
+  const nodeMap = new Map<string, TreeNode>([["", root]]);
+
+  const ensureNode = (directoryPath: string) => {
+    const directoryParts = directoryPath.split("/").filter(Boolean);
+    let current = root;
+    let path = "";
+
+    for (const part of directoryParts) {
+      path = path ? `${path}/${part}` : part;
+      let node = nodeMap.get(path);
+      if (!node) {
+        node = {
+          id: path,
+          type: "directory",
+          label: part,
+          path,
+          count: 0,
+          depth: path.split("/").length,
+          custom: false,
+          children: [],
+        };
+        nodeMap.set(path, node);
+        current.children.push(node);
+      }
+      current = node;
+    }
+    return current;
+  };
+
+  for (const groupPath of groupPaths) {
+    const node = ensureNode(groupPath);
+    node.custom = true;
+  }
+
+  for (const endpoint of endpoints) {
+    const directoryPath = getEndpointDirectoryPath(endpoint);
+    const directoryParts = directoryPath.split("/").filter(Boolean);
+    let path = "";
+
+    for (const part of directoryParts) {
+      path = path ? `${path}/${part}` : part;
+      const node = nodeMap.get(path) ?? ensureNode(path);
+      node.count += 1;
+    }
+
+    const directoryNode = ensureNode(directoryPath);
+    const fileLabel = getEndpointFileName(endpoint);
+    directoryNode.children.push({
+      id: `endpoint:${endpoint.id}`,
+      type: "file",
+      label: fileLabel,
+      path: endpoint.overridePath,
+      count: 1,
+      depth: directoryNode.depth + 1,
+      custom: false,
+      endpointId: endpoint.id,
+      children: [],
+    });
+  }
+
+  const sortChildren = (node: TreeNode) => {
+    node.children.sort((left, right) => {
+      if (left.type !== right.type) return left.type === "directory" ? -1 : 1;
+      if (left.custom !== right.custom) return left.custom ? -1 : 1;
+      return left.label.localeCompare(right.label);
+    });
+    for (const child of node.children) sortChildren(child);
+  };
+  sortChildren(root);
+
+  return root;
+}
+
+function getEndpointDirectoryPath(endpoint: Endpoint) {
+  const groupPath = endpoint.groupPath?.trim().replace(/^\/+|\/+$/g, "");
+  if (groupPath) return groupPath;
+  const parts = endpoint.overridePath.split("/").filter(Boolean);
+  return (parts.length > 1 ? parts.slice(0, -1) : parts).join("/");
+}
+
+function getEndpointFileName(endpoint: Endpoint) {
+  const parts = endpoint.overridePath.split("/").filter(Boolean);
+  return parts[parts.length - 1] || endpoint.name || "response.json";
+}
+
+function buildCompactDirectoryTree(node: TreeNode, endpoints: Endpoint[]) {
+  const directEndpoints = (path: string) =>
+    endpoints.some((endpoint) => getEndpointDirectoryPath(endpoint) === path);
+  const compactNode = (source: TreeNode, depth: number): CompactTreeNode => {
+    if (source.type === "file") {
+      return { ...source, depth, children: [] };
+    }
+
+    const labels = [source.label];
+    let current = source;
+    while (
+      current.path &&
+      current.children.filter((child) => child.type === "directory").length === 1 &&
+      current.children.every((child) => child.type === "directory") &&
+      !directEndpoints(current.path) &&
+      !current.custom
+    ) {
+      const nextDirectory = current.children.find((child) => child.type === "directory");
+      if (!nextDirectory) break;
+      current = nextDirectory;
+      labels.push(current.label);
+    }
+
+    return {
+      ...current,
+      id: current.path || source.id,
+      label: source.path ? labels.join("/") : source.label,
+      depth,
+      children: current.children.map((child) => compactNode(child, depth + 1)),
+    };
+  };
+
+  return {
+    ...node,
+    depth: 0,
+    children: node.children.map((child) => compactNode(child, 1)),
+  } satisfies CompactTreeNode;
+}
+
+function visibleTreeNodes(root: TreeNode, expandedPaths: Set<string>) {
+  const nodes: TreeNode[] = [];
+  const visit = (node: TreeNode) => {
+    nodes.push(node);
+    if (!expandedPaths.has(node.path)) return;
+    for (const child of node.children) visit(child);
+  };
+  visit(root);
+  return nodes;
+}
+
+function isEndpointInDirectory(endpoint: Endpoint, directory: string) {
+  const path = getEndpointDirectoryPath(endpoint);
+  return !directory || path === directory || path.startsWith(`${directory}/`);
+}
+
+function isPathInside(path: string, parent: string) {
+  return path === parent || path.startsWith(`${parent}/`);
+}
+
+function reparentPath(path: string, source: string, target: string) {
+  const parts = source.split("/").filter(Boolean);
+  const name = parts[parts.length - 1] ?? source;
+  const nextRoot = target ? `${target}/${name}` : name;
+  const suffix = path === source ? "" : path.slice(source.length);
+  return `${nextRoot}${suffix}`;
+}
+
+function parentDirectoryPath(path: string) {
+  const parts = path.split("/").filter(Boolean);
+  parts.pop();
+  return parts.join("/");
+}
+
+function ancestorDirectoryPaths(path: string) {
+  const parts = path.split("/").filter(Boolean);
+  const ancestors = [""];
+  for (let index = 1; index <= parts.length; index += 1) {
+    ancestors.push(parts.slice(0, index).join("/"));
+  }
+  return ancestors;
+}
+
+function directoryDomId(path: string) {
+  return path || "__root__";
+}
+
+function treeNodeKey(node: TreeNode) {
+  return node.type === "file" ? `file:${node.endpointId ?? node.path}` : `directory:${node.path}`;
+}
+
+function directoryTreeNodeKey(path: string) {
+  return `directory:${path}`;
+}
+
+function endpointTreeNodeKey(endpointId?: string) {
+  return endpointId ? `file:${endpointId}` : "";
+}
+
+function treeNodeDomId(key: string) {
+  return `tree-node-${key || "directory:"}`;
+}
+
+function parseSearchQuery(query: string, regexEnabled: boolean) {
+  const trimmed = query.trim();
+  if (!trimmed) return null;
+
+  const regexMatch = trimmed.match(/^\/(.+)\/([dgimsuvy]*)$/);
+  if (regexEnabled || regexMatch) {
+    const pattern = regexMatch ? regexMatch[1] : trimmed;
+    const rawFlags = regexMatch ? regexMatch[2] : "";
+    const flags = rawFlags.includes("i") ? rawFlags : `${rawFlags}i`;
+    try {
+      return { matcher: (value: string) => new RegExp(pattern, flags).test(value), mode: "regex" as const };
+    } catch {
+      return {
+        matcher: (value: string) => value.toLowerCase().includes(trimmed.toLowerCase()),
+        mode: "text" as const,
+      };
+    }
+  }
+
+  const normalizedQuery = trimmed.toLowerCase();
+  return { matcher: (value: string) => value.toLowerCase().includes(normalizedQuery), mode: "text" as const };
+}
+
+export function App() {
+  const [store, setStore] = useState<Store | null>(null);
+  const [selectedEndpointId, setSelectedEndpointId] = useState<string | null>(null);
+  const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
+  const [selectedEndpointIds, setSelectedEndpointIds] = useState(() => new Set<string>());
+  const [selectionAnchorEndpointId, setSelectionAnchorEndpointId] = useState<string | null>(null);
+  const [selectedDirectory, setSelectedDirectory] = useState("");
+  const [focusedTreeNodeId, setFocusedTreeNodeId] = useState(directoryTreeNodeKey(""));
+  const [directoryViewMode, setDirectoryViewMode] = useState<DirectoryViewMode>("tree");
+  const [dragOverDirectory, setDragOverDirectory] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [searchRegexEnabled, setSearchRegexEnabled] = useState(false);
+  const [expandedDirectories, setExpandedDirectories] = useState(() => new Set([""]));
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [editingTitleDraft, setEditingTitleDraft] = useState("");
+  const [editingDescription, setEditingDescription] = useState(false);
+  const [editingDescriptionDraft, setEditingDescriptionDraft] = useState("");
+  const [createGroupOpen, setCreateGroupOpen] = useState(false);
+  const [createGroupDraft, setCreateGroupDraft] = useState("");
+  const [editingCaseId, setEditingCaseId] = useState<string | null>(null);
+  const [editingCaseName, setEditingCaseName] = useState("");
+  const [fullscreenWrapLines, setFullscreenWrapLines] = useState(true);
+  const [responseFullscreenOpen, setResponseFullscreenOpen] = useState(false);
+  const [bodyDraft, setBodyDraft] = useState("");
+  const [bodyDraftKey, setBodyDraftKey] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [curlText, setCurlText] = useState("");
+  const [curlFetchResponse, setCurlFetchResponse] = useState(false);
+  const [importingCurl, setImportingCurl] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<"appearance" | "ai">("appearance");
+  const [aiApiKeyVisible, setAiApiKeyVisible] = useState(false);
+  const [aiDialogMode, setAiDialogMode] = useState<"single" | "multiple" | null>(null);
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiPreview, setAiPreview] = useState<AiPreview | null>(null);
+  const [aiProgress, setAiProgress] = useState<AiProgress | null>(null);
+  const bodyPersistTimer = useRef<number | null>(null);
+  const caseTabsRef = useRef<HTMLDivElement | null>(null);
+  const storeRef = useRef<Store | null>(null);
+  const pendingThemeRef = useRef<AppTheme | null>(null);
+
+  const showToast = useCallback((message: string, error = false) => {
+    if (error) sonnerToast.error(message);
+    else sonnerToast.success(message);
+  }, []);
+
+  const receiveState = useCallback(
+    (payload: NativePayload) => {
+      if (payload.store) {
+        const nextStore = normalizeStore(payload.store);
+        const pendingTheme = pendingThemeRef.current;
+        if (pendingTheme) {
+          if (nextStore.uiSettings?.theme === pendingTheme) {
+            pendingThemeRef.current = null;
+          } else {
+            nextStore.uiSettings = { ...(nextStore.uiSettings ?? defaultUiSettings), theme: pendingTheme };
+          }
+        }
+        storeRef.current = nextStore;
+        setStore(nextStore);
+        setSelectedEndpointId((current) => {
+          if (payload.importedEndpointId) return payload.importedEndpointId;
+          if (current && nextStore.endpoints.some((endpoint) => endpoint.id === current)) return current;
+          return nextStore.endpoints[0]?.id ?? null;
+        });
+        if (payload.importedCaseId) setSelectedCaseId(payload.importedCaseId);
+      }
+      if (payload.importedEndpointId || payload.error) setImportingCurl(false);
+      if (payload.aiProgress) setAiProgress(payload.aiProgress);
+      if (payload.aiPreview || payload.error) setAiGenerating(false);
+      if (payload.aiPreview) setAiPreview(payload.aiPreview);
+      if (payload.importedEndpointId) {
+        setImportOpen(false);
+        setCurlText("");
+        setCurlFetchResponse(false);
+      }
+      if (payload.message) showToast(payload.message);
+      if (payload.error) showToast(payload.error, true);
+    },
+    [showToast],
+  );
+
+  useEffect(() => {
+    window.__receiveNativeState = receiveState;
+    send("ready");
+    const timer = window.setInterval(() => send("syncFiles"), 4000);
+    return () => window.clearInterval(timer);
+  }, [receiveState]);
+
+  useEffect(() => {
+    const handleMouseDown = (event: MouseEvent) => {
+      if (event.button !== 0 || event.detail > 1) return;
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      if (target.closest(nativeNoDragSelector)) return;
+      if (!target.closest(nativeDragRegionSelector)) return;
+
+      event.preventDefault();
+      window.getSelection()?.removeAllRanges();
+      send("startWindowDrag");
+    };
+
+    document.addEventListener("mousedown", handleMouseDown, true);
+    return () => document.removeEventListener("mousedown", handleMouseDown, true);
+  }, []);
+
+  useEffect(() => {
+    window.__openMockKitSettings = () => {
+      setSettingsSection("appearance");
+      setSettingsOpen(true);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey && event.key === ",")) return;
+      event.preventDefault();
+      setSettingsSection("appearance");
+      setSettingsOpen(true);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.__openMockKitSettings = undefined;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
+
+  const endpoints = store?.endpoints ?? [];
+  const groupPaths = store?.groupPaths ?? [];
+  const endpoint = endpoints.find((item) => item.id === selectedEndpointId) ?? null;
+  const mockCase = endpoint?.cases.find((item) => item.id === selectedCaseId) ?? activeCase(endpoint);
+  const bodyDocumentKey = endpoint && mockCase ? `${endpoint.id}-${mockCase.id}` : "empty";
+  const currentBodyDraft = bodyDraftKey === bodyDocumentKey ? bodyDraft : (mockCase?.body ?? "");
+  const directoryTree = useMemo(() => buildDirectoryTree(endpoints, groupPaths), [endpoints, groupPaths]);
+  const compactDirectoryTree = useMemo(
+    () => buildCompactDirectoryTree(directoryTree, endpoints),
+    [directoryTree, endpoints],
+  );
+  const displayedDirectoryTree = directoryViewMode === "tree" ? directoryTree : compactDirectoryTree;
+  const visibleDirectories = useMemo(
+    () => visibleTreeNodes(displayedDirectoryTree, expandedDirectories),
+    [displayedDirectoryTree, expandedDirectories],
+  );
+  const directoryEndpoints = useMemo(
+    () => endpoints.filter((item) => isEndpointInDirectory(item, selectedDirectory)),
+    [endpoints, selectedDirectory],
+  );
+  const filteredEndpoints = useMemo(() => {
+    const search = parseSearchQuery(query, searchRegexEnabled);
+    return endpoints.filter((item) => {
+      if (!isEndpointInDirectory(item, selectedDirectory)) return false;
+      if (!search) return true;
+      const haystack = `${item.name} ${item.method} ${item.overridePath} ${item.description}`;
+      return search.matcher(haystack);
+    });
+  }, [endpoints, query, searchRegexEnabled, selectedDirectory]);
+  const selectedEndpointCount = selectedEndpointIds.size;
+  const jsonStatus = useMemo(() => getJsonStatus(currentBodyDraft), [currentBodyDraft]);
+  const previewFile = useMemo(() => caseFile(endpoint, mockCase ?? null), [endpoint, mockCase]);
+  const aiSettings = store?.aiSettings ?? defaultAiSettings;
+  const uiSettings = store?.uiSettings ?? defaultUiSettings;
+  const currentTheme = uiSettings.theme;
+  const aiEnabled = aiSettings.enabled === true;
+  const aiApiKeyCount = parseApiKeys(aiSettings.apiKey).length;
+
+  useEffect(() => {
+    document.documentElement.dataset.appTheme = currentTheme;
+    document.body.dataset.appTheme = currentTheme;
+  }, [currentTheme]);
+
+  useEffect(() => {
+    setEditingTitle(false);
+    setEditingTitleDraft(endpoint?.name ?? "");
+    setEditingDescription(false);
+    setEditingDescriptionDraft(endpoint?.description ?? "");
+    setEditingCaseId(null);
+    setEditingCaseName("");
+  }, [endpoint?.name, endpoint?.description]);
+
+  useEffect(() => {
+    const endpointIds = new Set(endpoints.map((item) => item.id));
+    setSelectedEndpointIds((current) => {
+      const next = new Set([...current].filter((id) => endpointIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [endpoints]);
+
+  useEffect(() => {
+    if (directoryEndpoints.length === 0) {
+      setSelectedEndpointId(null);
+      setSelectedCaseId(null);
+      return;
+    }
+    if (selectedEndpointId && directoryEndpoints.some((item) => item.id === selectedEndpointId)) return;
+
+    const nextEndpoint = directoryEndpoints[0];
+    setSelectedEndpointId(nextEndpoint.id);
+    setSelectedCaseId(activeCase(nextEndpoint)?.id ?? null);
+  }, [directoryEndpoints, selectedEndpointId]);
+
+  useEffect(() => {
+    const nextBody = mockCase?.body ?? "";
+    setBodyDraft(nextBody);
+    setBodyDraftKey(bodyDocumentKey);
+  }, [mockCase?.body, bodyDocumentKey]);
+
+  useEffect(
+    () => () => {
+      if (bodyPersistTimer.current) window.clearTimeout(bodyPersistTimer.current);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const element = caseTabsRef.current;
+    if (!element || !selectedCaseId) return;
+
+    window.requestAnimationFrame(() => {
+      const activeTab = element.querySelector<HTMLElement>(`[data-case-id="${CSS.escape(selectedCaseId)}"]`);
+      activeTab?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      updateCaseTabsScrollState(element);
+    });
+  }, [selectedCaseId]);
+
+  const toggleDirectory = (path: string) => {
+    setExpandedDirectories((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const setDirectoryExpanded = (path: string, expanded: boolean) => {
+    setExpandedDirectories((current) => {
+      const next = new Set(current);
+      if (expanded) next.add(path);
+      else if (path) next.delete(path);
+      return next;
+    });
+  };
+
+  const selectDirectory = (path: string) => {
+    setFocusedTreeNodeId(directoryTreeNodeKey(path));
+    setSelectedDirectory(path);
+    setQuery("");
+  };
+
+  const scrollTreeNodeIntoView = (key: string) => {
+    window.requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLElement>(`[data-tree-node-id="${CSS.escape(key)}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+    });
+  };
+
+  const selectDirectoryWithScroll = (path: string) => {
+    selectDirectory(path);
+    scrollTreeNodeIntoView(directoryTreeNodeKey(path));
+  };
+
+  const selectTreeNodeWithScroll = (node: TreeNode) => {
+    const key = treeNodeKey(node);
+    setFocusedTreeNodeId(key);
+    if (node.type === "file") selectEndpointFromTree(node.endpointId);
+    else selectDirectory(node.path);
+    scrollTreeNodeIntoView(key);
+  };
+
+  const handleDirectoryKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", " "].includes(event.key)) return;
+    const selectedFileKey = endpointTreeNodeKey(selectedEndpointId ?? undefined);
+    const preferredKey = visibleDirectories.some((node) => treeNodeKey(node) === focusedTreeNodeId)
+      ? focusedTreeNodeId
+      : selectedFileKey && visibleDirectories.some((node) => treeNodeKey(node) === selectedFileKey)
+        ? selectedFileKey
+        : directoryTreeNodeKey(selectedDirectory);
+    const currentIndex = visibleDirectories.findIndex((node) => treeNodeKey(node) === preferredKey);
+    const safeIndex = currentIndex === -1 ? 0 : currentIndex;
+    const currentNode = visibleDirectories[safeIndex] ?? visibleDirectories[0];
+    if (!currentNode) return;
+
+    event.preventDefault();
+    if (event.key === "ArrowUp") {
+      const nextNode = visibleDirectories[Math.max(0, safeIndex - 1)] ?? currentNode;
+      selectTreeNodeWithScroll(nextNode);
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      const nextNode =
+        visibleDirectories[Math.min(visibleDirectories.length - 1, safeIndex + 1)] ?? currentNode;
+      selectTreeNodeWithScroll(nextNode);
+      return;
+    }
+    if (currentNode.type === "file") {
+      const currentEndpoint = endpoints.find((item) => item.id === currentNode.endpointId);
+      if (event.key === "ArrowLeft" && currentEndpoint) {
+        selectDirectoryWithScroll(getEndpointDirectoryPath(currentEndpoint));
+      } else {
+        selectEndpointFromTree(currentNode.endpointId);
+      }
+      return;
+    }
+    if (event.key === "ArrowRight") {
+      if (currentNode.children.length > 0 && !expandedDirectories.has(currentNode.path)) {
+        setDirectoryExpanded(currentNode.path, true);
+        return;
+      }
+      if (currentNode.children.length > 0) selectTreeNodeWithScroll(currentNode.children[0]);
+      return;
+    }
+    if (event.key === "ArrowLeft") {
+      if (currentNode.children.length > 0 && expandedDirectories.has(currentNode.path) && currentNode.path) {
+        setDirectoryExpanded(currentNode.path, false);
+        return;
+      }
+      selectDirectoryWithScroll(parentDirectoryPath(currentNode.path));
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      if (currentNode.children.length > 0) {
+        setDirectoryExpanded(currentNode.path, !expandedDirectories.has(currentNode.path));
+      }
+    }
+  };
+
+  const openCreateGroupDialog = () => {
+    setCreateGroupDraft(selectedDirectory ? `${selectedDirectory}/` : "");
+    setCreateGroupOpen(true);
+  };
+
+  const createGroup = () => {
+    const cleanPath = cleanGroupPath(createGroupDraft);
+    if (!cleanPath) return;
+    if (storeRef.current?.groupPaths?.includes(cleanPath)) {
+      setSelectedDirectory(cleanPath);
+      setCreateGroupOpen(false);
+      showToast("业务分组已存在。");
+      return;
+    }
+    mutateStore((draft) => {
+      draft.groupPaths = normalizeGroupPaths([...(draft.groupPaths ?? []), cleanPath]);
+    });
+    setExpandedDirectories((current) => {
+      const next = new Set(current);
+      next.add("");
+      const parts = cleanPath.split("/");
+      for (let index = 1; index < parts.length; index += 1) {
+        next.add(parts.slice(0, index).join("/"));
+      }
+      return next;
+    });
+    setSelectedDirectory(cleanPath);
+    setCreateGroupOpen(false);
+    setCreateGroupDraft("");
+  };
+
+  const moveDirectory = (sourcePath: string, targetPath: string) => {
+    setDragOverDirectory(null);
+    if (!sourcePath || sourcePath === targetPath || isPathInside(targetPath, sourcePath)) return;
+    const nextSelectedDirectory = selectedDirectory
+      ? isPathInside(selectedDirectory, sourcePath)
+        ? reparentPath(selectedDirectory, sourcePath, targetPath)
+        : selectedDirectory
+      : selectedDirectory;
+
+    mutateStore((draft) => {
+      const movedPaths = new Set<string>();
+      for (const groupPath of draft.groupPaths ?? []) {
+        if (isPathInside(groupPath, sourcePath))
+          movedPaths.add(reparentPath(groupPath, sourcePath, targetPath));
+        else movedPaths.add(groupPath);
+      }
+      movedPaths.add(targetPath ? targetPath : "");
+
+      for (const item of draft.endpoints) {
+        const directoryPath = getEndpointDirectoryPath(item);
+        if (!isPathInside(directoryPath, sourcePath)) continue;
+        const nextPath = reparentPath(directoryPath, sourcePath, targetPath);
+        item.groupPath = nextPath;
+        movedPaths.add(nextPath);
+      }
+
+      draft.groupPaths = normalizeGroupPaths([...movedPaths]);
+    });
+
+    setExpandedDirectories((current) => {
+      const next = new Set(current);
+      next.add(targetPath);
+      const nextMovedRoot = reparentPath(sourcePath, sourcePath, targetPath);
+      next.add(nextMovedRoot);
+      return next;
+    });
+    setSelectedDirectory(nextSelectedDirectory);
+  };
+
+  const persist = useCallback((nextStore: Store) => {
+    storeRef.current = nextStore;
+    setStore({ ...nextStore, endpoints: [...nextStore.endpoints] });
+    send("saveStore", { store: nextStore });
+  }, []);
+
+  const mutateStore = useCallback(
+    (mutator: (draft: Store) => void) => {
+      if (!storeRef.current) return;
+      const draft = structuredClone(storeRef.current);
+      mutator(draft);
+      persist(draft);
+    },
+    [persist],
+  );
+
+  const selectedDirectoryLabel = selectedDirectory || "Overrides 根目录";
+  const newEndpointBasePath = "example.com/api/example.json";
+  const newEndpointPath = uniqueOverridePath(newEndpointBasePath, endpoints);
+
+  const addEndpoint = () => {
+    const defaultCaseId = createId();
+    const nextEndpoint: Endpoint = {
+      id: createId(),
+      name: "新接口",
+      method: "GET",
+      overridePath: newEndpointPath,
+      groupPath: selectedDirectory || null,
+      description: "",
+      tags: [],
+      enabled: true,
+      activeCaseId: defaultCaseId,
+      cases: [
+        { id: defaultCaseId, name: "Default", body: '{\n  "ok": true\n}', status: 200, headers: "" },
+        { id: createId(), name: "成功", body: successBody, status: 200, headers: "" },
+        { id: createId(), name: "失败", body: failureBody, status: 500, headers: "" },
+        { id: createId(), name: "空数据", body: emptyBody, status: 200, headers: "" },
+      ],
+    };
+    mutateStore((draft) => draft.endpoints.unshift(nextEndpoint));
+    setSelectedEndpointId(nextEndpoint.id);
+    setSelectedCaseId(defaultCaseId);
+  };
+
+  const toggleEndpointSelection = (endpointId: string, checked: boolean) => {
+    setSelectedEndpointIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(endpointId);
+      else next.delete(endpointId);
+      return next;
+    });
+    setSelectionAnchorEndpointId(endpointId);
+  };
+
+  const selectEndpointRange = (endpointId: string, checked = true) => {
+    const anchorId = selectionAnchorEndpointId ?? selectedEndpointId ?? endpointId;
+    const anchorIndex = filteredEndpoints.findIndex((item) => item.id === anchorId);
+    const targetIndex = filteredEndpoints.findIndex((item) => item.id === endpointId);
+    if (anchorIndex === -1 || targetIndex === -1) {
+      toggleEndpointSelection(endpointId, checked);
+      return;
+    }
+
+    const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+    const rangeIds = filteredEndpoints.slice(start, end + 1).map((item) => item.id);
+    setSelectedEndpointIds((current) => {
+      const next = new Set(current);
+      for (const id of rangeIds) {
+        if (checked) next.add(id);
+        else next.delete(id);
+      }
+      return next;
+    });
+  };
+
+  const handleEndpointSelectionGesture = (endpointId: string, event: ReactMouseEvent, checked?: boolean) => {
+    if (event.shiftKey) {
+      selectEndpointRange(endpointId, checked ?? true);
+      return;
+    }
+
+    toggleEndpointSelection(endpointId, checked ?? !selectedEndpointIds.has(endpointId));
+  };
+
+  const handleEndpointRowClick = (item: Endpoint, event: ReactMouseEvent<HTMLButtonElement>) => {
+    if (event.shiftKey || event.metaKey || event.ctrlKey) {
+      event.preventDefault();
+      handleEndpointSelectionGesture(item.id, event);
+      return;
+    }
+
+    setSelectedEndpointId(item.id);
+    setSelectedCaseId(item.activeCaseId ?? item.cases[0]?.id ?? null);
+    setSelectionAnchorEndpointId(item.id);
+    setFocusedTreeNodeId(endpointTreeNodeKey(item.id));
+  };
+
+  const selectEndpointFromTree = (endpointId?: string) => {
+    const item = endpoints.find((candidate) => candidate.id === endpointId);
+    if (!item) return;
+    setFocusedTreeNodeId(endpointTreeNodeKey(item.id));
+    setSelectedDirectory(getEndpointDirectoryPath(item));
+    setSelectedEndpointId(item.id);
+    setSelectedCaseId(item.activeCaseId ?? item.cases[0]?.id ?? null);
+    setSelectionAnchorEndpointId(item.id);
+    setQuery("");
+  };
+
+  const clearEndpointSelection = () => {
+    setSelectedEndpointIds(new Set());
+    setSelectionAnchorEndpointId(null);
+  };
+
+  const deleteSelectedEndpoints = () => {
+    if (selectedEndpointIds.size === 0) return;
+    const count = selectedEndpointIds.size;
+    setDeleteTarget({ type: "bulk", endpointIds: [...selectedEndpointIds], count });
+  };
+
+  const getEndpointContextIds = (item: Endpoint) =>
+    selectedEndpointIds.has(item.id) && selectedEndpointIds.size > 1 ? [...selectedEndpointIds] : [item.id];
+
+  const prepareEndpointContextMenu = (item: Endpoint) => {
+    setSelectedEndpointId(item.id);
+    setSelectedCaseId(item.activeCaseId ?? item.cases[0]?.id ?? null);
+    if (!selectedEndpointIds.has(item.id)) {
+      setSelectedEndpointIds(new Set());
+      setSelectionAnchorEndpointId(item.id);
+    }
+  };
+
+  const revealEndpointDirectory = (item: Endpoint) => {
+    const directoryPath = getEndpointDirectoryPath(item);
+    setExpandedDirectories((current) => {
+      const next = new Set(current);
+      for (const path of ancestorDirectoryPaths(directoryPath)) next.add(path);
+      return next;
+    });
+    setSelectedDirectory(directoryPath);
+    setSelectedEndpointId(item.id);
+    setSelectedCaseId(item.activeCaseId ?? item.cases[0]?.id ?? null);
+    setSelectionAnchorEndpointId(item.id);
+    setQuery("");
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document
+          .querySelector<HTMLElement>(
+            `[data-directory-path="${CSS.escape(directoryDomId(item.overridePath))}"]`,
+          )
+          ?.scrollIntoView({ block: "nearest" });
+      });
+    });
+  };
+
+  const setEndpointIdsEnabled = (endpointIds: string[], enabled: boolean) => {
+    const ids = new Set(endpointIds);
+    mutateStore((draft) => {
+      for (const item of draft.endpoints) {
+        if (ids.has(item.id)) item.enabled = enabled;
+      }
+    });
+    showToast(`${enabled ? "已启用" : "已禁用"} ${endpointIds.length} 个接口。`);
+  };
+
+  const requestDeleteEndpointFromList = (item: Endpoint) => {
+    const endpointIds = getEndpointContextIds(item);
+    if (endpointIds.length > 1) {
+      setDeleteTarget({ type: "bulk", endpointIds, count: endpointIds.length });
+      return;
+    }
+    setDeleteTarget({ type: "endpoint", endpointId: item.id, name: item.name || "未命名接口" });
+  };
+
+  const confirmDeleteSelectedEndpoints = (endpointIds: string[]) => {
+    const ids = new Set(endpointIds);
+    let nextSelectedEndpointId: string | null = null;
+    mutateStore((draft) => {
+      draft.endpoints = draft.endpoints.filter((item) => !ids.has(item.id));
+      nextSelectedEndpointId =
+        selectedEndpointId && !ids.has(selectedEndpointId)
+          ? selectedEndpointId
+          : (draft.endpoints[0]?.id ?? null);
+    });
+    setSelectedEndpointIds(new Set());
+    setSelectedEndpointId(nextSelectedEndpointId);
+    setSelectedCaseId(null);
+    showToast(`已删除 ${endpointIds.length} 个接口。`);
+  };
+
+  const setGlobalEnabled = (enabled: boolean) => {
+    if (enabled) {
+      mutateStore((draft) => {
+        draft.mockEnabled = true;
+      });
+      return;
+    }
+    send("disable");
+  };
+
+  const setDirectoryEnabledByPath = (path: string, enabled: boolean) => {
+    mutateStore((draft) => {
+      for (const item of draft.endpoints) {
+        if (isEndpointInDirectory(item, path)) item.enabled = enabled;
+      }
+    });
+  };
+
+  const updateEndpointEnabled = (endpointId: string, enabled: boolean) => {
+    mutateStore((draft) => {
+      const item = draft.endpoints.find((candidate) => candidate.id === endpointId);
+      if (item) item.enabled = enabled;
+    });
+  };
+
+  const updateEndpoint = (field: keyof Endpoint, value: string) => {
+    mutateStore((draft) => {
+      const item = draft.endpoints.find((candidate) => candidate.id === selectedEndpointId);
+      if (!item) return;
+      if (field === "overridePath" && selectedDirectory) {
+        const cleanPath = value.replace(/^\/+/, "");
+        item.overridePath =
+          cleanPath === selectedDirectory || cleanPath.startsWith(`${selectedDirectory}/`)
+            ? cleanPath
+            : `${selectedDirectory}/${cleanPath}`;
+      } else {
+        (item[field] as string) = value;
+      }
+    });
+  };
+
+  const startEditingTitle = () => {
+    if (!endpoint) return;
+    setEditingTitleDraft(endpoint.name);
+    setEditingTitle(true);
+  };
+
+  const commitTitle = () => {
+    if (!editingTitle) return;
+    updateEndpoint("name", editingTitleDraft);
+    setEditingTitle(false);
+  };
+
+  const cancelTitleEdit = () => {
+    setEditingTitle(false);
+    setEditingTitleDraft(endpoint?.name ?? "");
+  };
+
+  const startEditingDescription = () => {
+    if (!endpoint) return;
+    setEditingDescriptionDraft(endpoint.description);
+    setEditingDescription(true);
+  };
+
+  const commitDescription = () => {
+    if (!editingDescription) return;
+    updateEndpoint("description", editingDescriptionDraft);
+    setEditingDescription(false);
+  };
+
+  const cancelDescriptionEdit = () => {
+    setEditingDescription(false);
+    setEditingDescriptionDraft(endpoint?.description ?? "");
+  };
+
+  const updateCase = (field: keyof MockCase, value: string) => {
+    mutateStore((draft) => {
+      const item = draft.endpoints.find((candidate) => candidate.id === selectedEndpointId);
+      const targetCaseId = editingCaseId ?? selectedCaseId;
+      const scenario = item?.cases.find((candidate) => candidate.id === targetCaseId);
+      if (!scenario) return;
+      (scenario[field] as string) = value;
+    });
+  };
+
+  const startRenameCase = (scenario: MockCase) => {
+    setSelectedCaseId(scenario.id);
+    setEditingCaseId(scenario.id);
+    setEditingCaseName(scenario.name);
+  };
+
+  const commitRenameCase = () => {
+    if (!editingCaseId) return;
+    const nextName = editingCaseName.trim() || "未命名场景";
+    updateCase("name", nextName);
+    setEditingCaseId(null);
+    setEditingCaseName("");
+  };
+
+  const cancelRenameCase = () => {
+    setEditingCaseId(null);
+    setEditingCaseName("");
+  };
+
+  const persistBody = useCallback(
+    (endpointId: string, caseId: string, body: string) => {
+      mutateStore((draft) => {
+        const item = draft.endpoints.find((candidate) => candidate.id === endpointId);
+        const scenario = item?.cases.find((candidate) => candidate.id === caseId);
+        if (scenario) scenario.body = body;
+      });
+    },
+    [mutateStore],
+  );
+
+  const scheduleBodyPersist = useCallback(
+    (body: string) => {
+      if (!endpoint || !mockCase) return;
+      const endpointId = endpoint.id;
+      const caseId = mockCase.id;
+      if (bodyPersistTimer.current) window.clearTimeout(bodyPersistTimer.current);
+      bodyPersistTimer.current = window.setTimeout(() => {
+        bodyPersistTimer.current = null;
+        persistBody(endpointId, caseId, body);
+      }, 250);
+    },
+    [endpoint, mockCase, persistBody],
+  );
+
+  const flushBodyPersist = useCallback(() => {
+    if (!endpoint || !mockCase) return;
+    if (bodyPersistTimer.current) {
+      window.clearTimeout(bodyPersistTimer.current);
+      bodyPersistTimer.current = null;
+    }
+    persistBody(endpoint.id, mockCase.id, currentBodyDraft);
+  }, [currentBodyDraft, endpoint, mockCase, persistBody]);
+
+  const switchCase = (caseId: string) => {
+    setSelectedCaseId(caseId);
+    mutateStore((draft) => {
+      const item = draft.endpoints.find((candidate) => candidate.id === selectedEndpointId);
+      if (item) item.activeCaseId = caseId;
+    });
+  };
+
+  const handleCaseTabsWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
+    const maxScrollLeft = element.scrollWidth - element.clientWidth;
+    if (maxScrollLeft <= 0) return;
+
+    const unit =
+      event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+        ? element.clientWidth
+        : event.deltaMode === WheelEvent.DOM_DELTA_LINE
+          ? 16
+          : 1;
+    const dominantDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    if (dominantDelta === 0) return;
+
+    const nextScrollLeft = Math.min(maxScrollLeft, Math.max(0, element.scrollLeft + dominantDelta * unit));
+    if (nextScrollLeft === element.scrollLeft) return;
+
+    event.preventDefault();
+    element.scrollLeft = nextScrollLeft;
+    updateCaseTabsScrollState(element);
+  };
+
+  const addCase = () => {
+    if (!endpoint) return;
+    const base = mockCase;
+    const nextCase: MockCase = {
+      id: createId(),
+      name: "新返回场景",
+      body: base?.body || "{\n  \n}",
+      status: base?.status || 200,
+      headers: base?.headers || "",
+    };
+    mutateStore((draft) => {
+      const item = draft.endpoints.find((candidate) => candidate.id === endpoint.id);
+      item?.cases.push(nextCase);
+    });
+    setSelectedCaseId(nextCase.id);
+  };
+
+  const requestDeleteCase = (caseId = mockCase?.id) => {
+    if (!endpoint || !caseId) return;
+    if (endpoint.cases.length <= 1) {
+      showToast("每个接口至少需要保留一个返回场景。", true);
+      return;
+    }
+    const targetCase = endpoint.cases.find((candidate) => candidate.id === caseId);
+    if (!targetCase) return;
+    setDeleteTarget({
+      type: "case",
+      endpointId: endpoint.id,
+      caseId,
+      name: targetCase.name || "未命名场景",
+    });
+  };
+
+  const confirmDeleteCase = (target: Extract<DeleteTarget, { type: "case" }>) => {
+    const item = storeRef.current?.endpoints.find((candidate) => candidate.id === target.endpointId);
+    if (!item) return;
+    if (item.cases.length <= 1) {
+      showToast("每个接口至少需要保留一个返回场景。", true);
+      return;
+    }
+    let nextCaseId: string | null = null;
+    mutateStore((draft) => {
+      const item = draft.endpoints.find((candidate) => candidate.id === target.endpointId);
+      if (!item) return;
+      item.cases = item.cases.filter((candidate) => candidate.id !== target.caseId);
+      if (item.activeCaseId === target.caseId) item.activeCaseId = item.cases[0]?.id ?? null;
+      nextCaseId = item.activeCaseId ?? item.cases[0]?.id ?? null;
+    });
+    setSelectedCaseId(nextCaseId);
+    showToast("已删除返回场景。");
+  };
+
+  const requestDeleteEndpoint = () => {
+    if (!endpoint) return;
+    setDeleteTarget({ type: "endpoint", endpointId: endpoint.id, name: endpoint.name || "未命名接口" });
+  };
+
+  const confirmDeleteEndpoint = (target: Extract<DeleteTarget, { type: "endpoint" }>) => {
+    mutateStore((draft) => {
+      draft.endpoints = draft.endpoints.filter((item) => item.id !== target.endpointId);
+    });
+    setSelectedEndpointId(null);
+    setSelectedCaseId(null);
+    showToast("已删除接口。");
+  };
+
+  const confirmDelete = () => {
+    if (!deleteTarget) return;
+    if (deleteTarget.type === "endpoint") confirmDeleteEndpoint(deleteTarget);
+    if (deleteTarget.type === "case") confirmDeleteCase(deleteTarget);
+    if (deleteTarget.type === "bulk") confirmDeleteSelectedEndpoints(deleteTarget.endpointIds);
+    setDeleteTarget(null);
+  };
+
+  const formatResponse = () => {
+    if (!mockCase) return;
+    try {
+      if (bodyPersistTimer.current) {
+        window.clearTimeout(bodyPersistTimer.current);
+        bodyPersistTimer.current = null;
+      }
+      const formatted = formatJson(currentBodyDraft);
+      setBodyDraft(formatted);
+      setBodyDraftKey(bodyDocumentKey);
+      if (endpoint) persistBody(endpoint.id, mockCase.id, formatted);
+    } catch {
+      showToast("响应内容不是有效的 JSON。", true);
+    }
+  };
+
+  const importCurl = () => {
+    const curl = curlText.trim();
+    if (!curl) {
+      showToast("先粘贴一段 cURL。", true);
+      return;
+    }
+    setImportingCurl(true);
+    send("importCurl", { curl, fetchResponse: curlFetchResponse });
+  };
+
+  const updateAiSettings = (patch: Partial<AiSettings>) => {
+    mutateStore((draft) => {
+      const current = { ...defaultAiSettings, ...(draft.aiSettings ?? {}) };
+      const currentProvider = current.provider;
+      const nextProvider = patch.provider ?? current.provider;
+      const apiKeys = {
+        ...(current.apiKeys ?? {}),
+        [currentProvider]: patch.apiKey ?? current.apiKey,
+      };
+      if (typeof patch.apiKey === "string") apiKeys[nextProvider] = patch.apiKey;
+      draft.aiSettings = {
+        ...current,
+        ...patch,
+        apiKeys,
+        apiKey: typeof patch.apiKey === "string" ? patch.apiKey : (apiKeys[nextProvider] ?? ""),
+        provider: nextProvider,
+        model:
+          patch.provider && patch.provider !== current.provider
+            ? nextProvider === "gemini"
+              ? "gemini-2.5-flash"
+              : nextProvider === "openai"
+                ? "gpt-4.1-mini"
+                : ""
+            : (patch.model ?? current.model),
+      };
+      draft.aiSettings.apiKeys = { ...apiKeys, [draft.aiSettings.provider]: draft.aiSettings.apiKey };
+    });
+  };
+
+  const updateUiSettings = (patch: Partial<UiSettings>) => {
+    if (patch.theme) pendingThemeRef.current = patch.theme;
+    mutateStore((draft) => {
+      draft.uiSettings = {
+        ...defaultUiSettings,
+        ...(draft.uiSettings ?? {}),
+        ...patch,
+      };
+    });
+  };
+
+  const openSettings = (section: "appearance" | "ai" = "appearance") => {
+    setSettingsSection(section);
+    setSettingsOpen(true);
+  };
+
+  const openAiDialog = (mode: "single" | "multiple") => {
+    if (!endpoint || !mockCase) return;
+    if (!aiEnabled) {
+      openSettings("ai");
+      return;
+    }
+    setAiDialogMode(mode);
+    setAiInstruction("");
+    setAiPreview(null);
+    setAiProgress(null);
+  };
+
+  const generateAiMock = () => {
+    if (!endpoint || !mockCase || !aiDialogMode) return;
+    const currentBody = currentBodyDraft;
+    setAiGenerating(true);
+    setAiPreview(null);
+    setAiProgress({ stage: "starting", message: "AI 生成已开始，正在准备上下文..." });
+    send("generateAiMock", {
+      aiRequest: {
+        mode: aiDialogMode,
+        instruction: aiInstruction,
+        endpoint: {
+          name: endpoint.name,
+          method: endpoint.method,
+          overridePath: endpoint.overridePath,
+          description: endpoint.description,
+          activeCaseName: mockCase.name,
+          activeBody: currentBody,
+          cases: endpoint.cases.map((item) => ({ name: item.name, body: item.body })),
+        },
+      },
+    });
+  };
+
+  const applyAiPreview = () => {
+    if (!endpoint || !mockCase || !aiPreview) return;
+    let nextCaseId = selectedCaseId;
+    mutateStore((draft) => {
+      const item = draft.endpoints.find((candidate) => candidate.id === endpoint.id);
+      if (!item) return;
+      if (aiPreview.mode === "single") {
+        const targetCase = item.cases.find((candidate) => candidate.id === mockCase.id);
+        const generated = aiPreview.cases[0];
+        if (targetCase && generated) {
+          targetCase.body = generated.body;
+          targetCase.name = generated.name || targetCase.name;
+          nextCaseId = targetCase.id;
+        }
+        return;
+      }
+
+      let firstGeneratedCaseId: string | null = null;
+      for (const generated of aiPreview.cases) {
+        const nextCaseId = createId();
+        firstGeneratedCaseId ??= nextCaseId;
+        item.cases.push({
+          id: nextCaseId,
+          name: generated.name || "AI 场景",
+          body: generated.body,
+          status: 200,
+          headers: "",
+        });
+      }
+      item.activeCaseId = firstGeneratedCaseId ?? item.cases[0]?.id ?? null;
+      nextCaseId = item.activeCaseId;
+    });
+    setSelectedCaseId(nextCaseId);
+    setAiDialogMode(null);
+    setAiPreview(null);
+    setAiProgress(null);
+    showToast("已应用 AI 生成结果。");
+  };
+
+  if (!store) {
+    return <div className="grid h-screen place-items-center text-[13px] text-muted">正在载入...</div>;
+  }
+
+  return (
+    <TooltipProvider>
+      <div className="h-full w-full overflow-visible bg-[var(--bg)]">
+        <ResizablePanelGroup direction="horizontal">
+          <ResizablePanel
+            defaultSize="252px"
+            groupResizeBehavior="preserve-pixel-size"
+            id="sidebar"
+            maxSize="360px"
+            minSize="232px"
+          >
+            <AppSidebar
+              directoryViewMode={directoryViewMode}
+              mockEnabled={store.mockEnabled}
+              overridesFolder={store.overridesFolder}
+              onCreateGroup={openCreateGroupDialog}
+              onDirectoryViewModeChange={setDirectoryViewMode}
+              onMockEnabledChange={setGlobalEnabled}
+            >
+              <ScrollArea
+                aria-activedescendant={treeNodeDomId(focusedTreeNodeId)}
+                aria-label="目录列表"
+                className="min-h-0 flex-1 pr-1 scroll-mask-y-4 source-directory-scroll"
+                onKeyDown={handleDirectoryKeyDown}
+                role="tree"
+                tabIndex={0}
+              >
+                <DirectoryNode
+                  endpoints={endpoints}
+                  dragOverPath={dragOverDirectory}
+                  expandedPaths={expandedDirectories}
+                  node={displayedDirectoryTree}
+                  overridesFolder={store.overridesFolder}
+                  onDragOverPath={setDragOverDirectory}
+                  onSelect={selectDirectory}
+                  onMoveDirectory={moveDirectory}
+                  onSetEnabled={setDirectoryEnabledByPath}
+                  onSetEndpointEnabled={updateEndpointEnabled}
+                  onSelectEndpoint={selectEndpointFromTree}
+                  onToggle={toggleDirectory}
+                  focusedNodeId={focusedTreeNodeId}
+                />
+              </ScrollArea>
+            </AppSidebar>
+          </ResizablePanel>
+          <ResizableHandle />
+          <ResizablePanel defaultSize="1fr" id="main" minSize="720px">
+            <main className="grid h-full min-h-0 min-w-0 grid-rows-[52px_minmax(0,1fr)] overflow-hidden bg-[var(--panel)]">
+              <MainToolbar
+                endpointCount={store.endpoints.length}
+                onImportCurl={() => setImportOpen(true)}
+                onOpenAiSettings={() => openSettings("ai")}
+              />
+
+              <ResizablePanelGroup direction="horizontal">
+                <ResizablePanel
+                  defaultSize="348px"
+                  groupResizeBehavior="preserve-pixel-size"
+                  id="endpoint-list"
+                  maxSize="520px"
+                  minSize="300px"
+                >
+                  <EndpointListPanel
+                    endpoints={endpoints}
+                    filteredEndpoints={filteredEndpoints}
+                    getEndpointContextIds={getEndpointContextIds}
+                    query={query}
+                    searchRegexEnabled={searchRegexEnabled}
+                    selectedDirectoryLabel={selectedDirectoryLabel}
+                    selectedEndpointCount={selectedEndpointCount}
+                    selectedEndpointId={selectedEndpointId}
+                    selectedEndpointIds={selectedEndpointIds}
+                    onAddEndpoint={addEndpoint}
+                    onClearSelection={clearEndpointSelection}
+                    onDeleteSelectedEndpoints={deleteSelectedEndpoints}
+                    onEndpointRowClick={handleEndpointRowClick}
+                    onEndpointSelectionGesture={handleEndpointSelectionGesture}
+                    onPrepareEndpointContextMenu={prepareEndpointContextMenu}
+                    onQueryChange={setQuery}
+                    onRegexEnabledChange={setSearchRegexEnabled}
+                    onRequestDeleteEndpoint={requestDeleteEndpointFromList}
+                    onRevealEndpointDirectory={revealEndpointDirectory}
+                    onSetEndpointIdsEnabled={setEndpointIdsEnabled}
+                    onToggleEndpointSelection={toggleEndpointSelection}
+                  />
+                </ResizablePanel>
+                <ResizableHandle />
+                <ResizablePanel defaultSize="1fr" id="editor" minSize="520px">
+                  <section className="grid min-h-0 min-w-0 overflow-hidden bg-[var(--panel)]">
+                    {!endpoint || !mockCase ? (
+                      <div className="grid h-full place-content-center gap-[7px] p-8 text-center">
+                        <div className="text-lg font-bold">还没有选择接口</div>
+                        <div className="max-w-[420px] text-[var(--muted)]">
+                          选择左侧接口，或新增一个接口来创建返回场景。
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="grid h-full min-h-0 grid-rows-[auto_auto_auto_minmax(0,1fr)] gap-3 overflow-hidden px-[18px] pb-3 pt-4">
+                        <div className="block min-w-0">
+                          <div className="grid min-w-0 gap-[3px]">
+                            {editingTitle ? (
+                              <Input
+                                autoFocus
+                                className="h-[30px] border-[var(--border)] bg-[color-mix(in_srgb,var(--panel)_82%,var(--panel-2))] px-[9px] py-0 text-left text-[21px] font-[720] text-[var(--text)]"
+                                value={editingTitleDraft}
+                                onBlur={commitTitle}
+                                onChange={(event) => setEditingTitleDraft(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter") commitTitle();
+                                  if (event.key === "Escape") cancelTitleEdit();
+                                }}
+                              />
+                            ) : (
+                              <div className="group block min-w-0 max-w-full">
+                                <div className="flex min-w-0 max-w-full items-baseline p-0 text-left text-[21px] font-[720] text-[var(--text)]">
+                                  <span className="min-w-0 flex-1 truncate">
+                                    {endpoint.name || "未命名接口"}
+                                  </span>
+                                  <Button
+                                    aria-label="编辑接口名称"
+                                    className={cn(editTriggerClass, "ml-[7px] shrink-0 align-[1px]")}
+                                    size="icon-xs"
+                                    type="button"
+                                    variant="ghost"
+                                    onClick={startEditingTitle}
+                                  >
+                                    <Pencil size={12} />
+                                  </Button>
+                                </div>
+                              </div>
+                            )}
+                            {editingDescription ? (
+                              <Textarea
+                                autoFocus
+                                className="mt-0.5 h-auto max-h-24 min-h-[42px] overflow-auto whitespace-pre-wrap border-[var(--border)] bg-[color-mix(in_srgb,var(--panel)_82%,var(--panel-2))] px-[9px] py-0 text-left leading-[18px] text-[var(--muted)]"
+                                placeholder="说明"
+                                value={editingDescriptionDraft}
+                                onBlur={commitDescription}
+                                onChange={(event) => setEditingDescriptionDraft(event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter" && (event.metaKey || event.ctrlKey))
+                                    commitDescription();
+                                  if (event.key === "Escape") cancelDescriptionEdit();
+                                }}
+                              />
+                            ) : (
+                              <div className="group block min-w-0 max-w-full">
+                                <div className="mt-0.5 inline min-w-0 whitespace-pre-wrap p-0 text-left leading-[18px] text-[var(--muted)] [overflow-wrap:anywhere]">
+                                  {endpoint.description || "添加说明"}
+                                  <Button
+                                    aria-label="编辑说明"
+                                    className={cn(editTriggerClass, "ml-1.5")}
+                                    size="icon-xs"
+                                    type="button"
+                                    variant="ghost"
+                                    onClick={startEditingDescription}
+                                  >
+                                    <Pencil size={12} />
+                                  </Button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2.5 gap-y-2 p-0">
+                          <div className="min-w-0">
+                            <span className="text-[11px] font-[560] text-[var(--muted)]">
+                              Chrome Overrides 路径
+                            </span>
+                            <div
+                              className="min-h-[30px] select-text whitespace-normal py-1.5 text-xs leading-[18px] text-[color-mix(in_srgb,var(--muted)_88%,var(--text))] [overflow-wrap:anywhere]"
+                              aria-label="Override 路径"
+                            >
+                              {endpoint.overridePath}
+                            </div>
+                          </div>
+                          <div className="inline-flex items-center gap-1">
+                            <Switch
+                              aria-label="当前接口 Mock"
+                              checked={endpoint.enabled !== false}
+                              onCheckedChange={(checked) => updateEndpointEnabled(endpoint.id, checked)}
+                              size="sm"
+                            />
+                            <Button
+                              aria-label="删除接口"
+                              className="size-[30px] text-[var(--danger)] hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
+                              variant="ghost"
+                              type="button"
+                              onClick={requestDeleteEndpoint}
+                            >
+                              <Trash2 size={14} />
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="grid min-w-0 gap-1.5">
+                          <div className="flex min-w-0 items-center justify-between gap-3">
+                            <div className="inline-flex min-w-0 items-baseline gap-2">
+                              <span className={panelLabelClass}>返回场景</span>
+                              <span className="truncate text-xs text-[var(--faint)]">双击名称重命名</span>
+                            </div>
+                            <div className="inline-flex flex-none items-center gap-1">
+                              {aiEnabled ? (
+                                <Button
+                                  className="min-h-7 origin-center rounded-lg hover:bg-[color-mix(in_srgb,var(--panel-3)_78%,transparent)] active:scale-95"
+                                  size="sm"
+                                  variant="outline"
+                                  type="button"
+                                  disabled={!endpoint}
+                                  onClick={() => openAiDialog("multiple")}
+                                >
+                                  <Sparkles size={14} />
+                                  生成多场景
+                                </Button>
+                              ) : null}
+                            </div>
+                          </div>
+                          <div>
+                            <Tabs
+                              className="min-w-0"
+                              value={selectedCaseId ?? endpoint.activeCaseId ?? endpoint.cases[0]?.id}
+                              onValueChange={(caseId) => switchCase(String(caseId))}
+                            >
+                              <div className="relative flex min-w-0 items-center gap-1.5">
+                                <TabsList
+                                  className="scroll-mask-x-4 flex min-w-0 flex-[1_1_auto] flex-nowrap gap-[5px] overflow-auto overscroll-x-contain rounded-none border-0 bg-transparent px-0 pb-[5px] pt-0 shadow-none [scroll-behavior:smooth] [scroll-padding-inline:8px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                                  ref={caseTabsRef}
+                                  onScroll={(event) => updateCaseTabsScrollState(event.currentTarget)}
+                                  onWheel={handleCaseTabsWheel}
+                                >
+                                  {endpoint.cases.map((scenario) => {
+                                    const isEditingCase = editingCaseId === scenario.id;
+                                    const tab = (
+                                      <div
+                                        className={cn(
+                                          "case-tab",
+                                          scenario.id === endpoint.activeCaseId && "current",
+                                        )}
+                                        key={scenario.id}
+                                        data-active={scenario.id === selectedCaseId ? "true" : undefined}
+                                        data-case-id={scenario.id}
+                                        data-editing={isEditingCase ? "true" : undefined}
+                                      >
+                                        {isEditingCase ? (
+                                          <Input
+                                            autoFocus
+                                            className="case-name-inline"
+                                            style={
+                                              {
+                                                "--case-name-length": editingCaseName.length,
+                                              } as CSSProperties
+                                            }
+                                            value={editingCaseName}
+                                            onBlur={commitRenameCase}
+                                            onChange={(event) => setEditingCaseName(event.target.value)}
+                                            onFocus={(event) => event.currentTarget.select()}
+                                            onKeyDown={(event) => {
+                                              if (event.key === "Enter") commitRenameCase();
+                                              if (event.key === "Escape") cancelRenameCase();
+                                            }}
+                                          />
+                                        ) : (
+                                          <TabsTrigger
+                                            value={scenario.id}
+                                            className="case-tab-main"
+                                            onDoubleClick={(event) => {
+                                              event.preventDefault();
+                                              startRenameCase(scenario);
+                                            }}
+                                          >
+                                            {scenario.id === endpoint.activeCaseId ? (
+                                              <span className="case-current-dot" aria-hidden="true" />
+                                            ) : null}
+                                            <span className="case-tab-label">{scenario.name}</span>
+                                          </TabsTrigger>
+                                        )}
+                                        {!isEditingCase && endpoint.cases.length > 1 ? (
+                                          <Button
+                                            aria-label={`删除返回场景 ${scenario.name}`}
+                                            className="case-tab-delete"
+                                            size="icon-xs"
+                                            type="button"
+                                            variant="ghost"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              requestDeleteCase(scenario.id);
+                                            }}
+                                          >
+                                            <X size={11} />
+                                          </Button>
+                                        ) : null}
+                                      </div>
+                                    );
+
+                                    return isEditingCase ? tab : tab;
+                                  })}
+                                </TabsList>
+                                <Button
+                                  className="size-[30px] min-h-[30px] flex-none origin-center rounded-[9px] border-[color-mix(in_srgb,var(--border)_74%,transparent)] bg-[color-mix(in_srgb,var(--panel)_86%,var(--panel-2))] shadow-[var(--control-shadow)] hover:border-[color-mix(in_srgb,var(--accent)_32%,var(--border))] hover:bg-[color-mix(in_srgb,var(--accent-soft)_40%,var(--panel))] active:scale-95"
+                                  size="icon-sm"
+                                  variant="outline"
+                                  type="button"
+                                  onClick={addCase}
+                                  aria-label="新增返回场景"
+                                >
+                                  <Plus size={16} />
+                                </Button>
+                              </div>
+                            </Tabs>
+                          </div>
+                        </div>
+
+                        <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-[11px] border border-[var(--border)] bg-[var(--panel)] shadow-[var(--surface-shadow)]">
+                          <div className="flex min-h-11 items-center justify-between gap-3 border-b border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel-2)_52%,transparent)] py-2 pl-3 pr-2.5">
+                            <div>
+                              <div className={panelLabelClass}>响应体</div>
+                              <div
+                                className={cn(
+                                  "text-xs text-[var(--muted)]",
+                                  !jsonStatus.valid && "text-[var(--danger)]",
+                                )}
+                              >
+                                {jsonStatus.message}
+                              </div>
+                            </div>
+                            <div className={editorActionsClass}>
+                              {aiEnabled ? (
+                                <Button
+                                  variant="secondary"
+                                  type="button"
+                                  onClick={() => openAiDialog("single")}
+                                >
+                                  <Sparkles size={13} /> AI 生成
+                                </Button>
+                              ) : null}
+                              <Button
+                                variant="secondary"
+                                type="button"
+                                onClick={() => navigator.clipboard?.writeText(currentBodyDraft)}
+                              >
+                                <Copy size={13} /> 复制
+                              </Button>
+                              <Button variant="secondary" type="button" onClick={formatResponse}>
+                                <FileJson size={13} /> 格式化
+                              </Button>
+                              <Button
+                                aria-label="全屏编辑响应体"
+                                variant="secondary"
+                                type="button"
+                                onClick={() => setResponseFullscreenOpen(true)}
+                              >
+                                <Maximize2 size={13} /> 全屏
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="code-editor" data-file={previewFile.name}>
+                            <ResponseBodyEditor
+                              key={bodyDocumentKey}
+                              value={currentBodyDraft}
+                              wrapLines={false}
+                              onChange={(nextBody) => {
+                                setBodyDraft(nextBody);
+                                setBodyDraftKey(bodyDocumentKey);
+                                scheduleBodyPersist(nextBody);
+                              }}
+                              onBlur={flushBodyPersist}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </section>
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            </main>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+
+        <CreateGroupDialog
+          cleanGroupPath={cleanGroupPath}
+          draft={createGroupDraft}
+          open={createGroupOpen}
+          onCreate={createGroup}
+          onDraftChange={setCreateGroupDraft}
+          onOpenChange={setCreateGroupOpen}
+        />
+
+        <DeleteConfirmDialog
+          target={deleteTarget}
+          onConfirm={confirmDelete}
+          onOpenChange={() => setDeleteTarget(null)}
+        />
+
+        <ImportCurlDialog
+          curlFetchResponse={curlFetchResponse}
+          curlText={curlText}
+          importingCurl={importingCurl}
+          open={importOpen}
+          onCurlFetchResponseChange={setCurlFetchResponse}
+          onCurlTextChange={setCurlText}
+          onImport={importCurl}
+          onOpenChange={setImportOpen}
+        />
+
+        <AppSettingsDialog
+          aiApiKeyCount={aiApiKeyCount}
+          aiApiKeyVisible={aiApiKeyVisible}
+          aiEnabled={aiEnabled}
+          aiSettings={aiSettings}
+          open={settingsOpen}
+          section={settingsSection}
+          theme={currentTheme}
+          onApiKeyVisibleChange={setAiApiKeyVisible}
+          onOpenChange={setSettingsOpen}
+          onSectionChange={setSettingsSection}
+          onThemeChange={(theme: AppTheme) => updateUiSettings({ theme })}
+          onUpdateSettings={updateAiSettings}
+        />
+
+        <Dialog
+          open={Boolean(aiDialogMode)}
+          onOpenChange={(open) => {
+            if (!open) {
+              setAiDialogMode(null);
+              setAiPreview(null);
+              setAiProgress(null);
+            }
+          }}
+        >
+          <DialogContent
+            className={cn(
+              "isolate grid max-h-[min(720px,calc(100vh-64px))] w-[min(680px,calc(100vw-56px))] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-[color-mix(in_srgb,var(--panel)_98%,white)]",
+              aiGenerating && "is-streaming",
+            )}
+            onInteractOutside={(event) => event.preventDefault()}
+          >
+            {aiDialogMode ? (
+              <>
+                <DialogHeader className="pr-11">
+                  <DialogTitle>
+                    {aiDialogMode === "multiple" ? "AI 生成多个返回场景" : "AI 生成当前响应"}
+                  </DialogTitle>
+                  <DialogDescription>
+                    基于当前响应结构改字段值、数组长度、布尔值和边界状态，生成结果会先预览。
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="grid min-h-0 gap-3 overflow-hidden">
+                  <Textarea
+                    aria-label="AI 生成要求"
+                    className="h-[68px] min-h-[68px] w-full resize-none whitespace-pre-wrap rounded-[10px] border border-[var(--border)] bg-[#fbfbfc] px-3 py-2.5 font-ui text-[13px] leading-normal text-[var(--text)]"
+                    placeholder={
+                      aiDialogMode === "multiple"
+                        ? "例如：保持字段结构，生成 items 为空、1 条、20 条；enabled 为 true/false；金额为 0、最大值；未登录和无权限场景"
+                        : "例如：把 result.items 改成 20 条；把 enabled 改为 false；把 name 改成长文本；把 total 改为 0"
+                    }
+                    value={aiInstruction}
+                    onChange={(event) => setAiInstruction(event.target.value)}
+                  />
+                  {aiGenerating ? (
+                    <output
+                      className="grid max-h-[360px] min-h-[220px] overflow-hidden rounded-[10px] border border-[color-mix(in_srgb,var(--border)_86%,transparent)] bg-[#fbfbfc]"
+                      aria-live="polite"
+                    >
+                      <div className="flex min-h-[34px] items-center justify-between gap-3 border-b border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel-2)_34%,white)] px-[11px] py-[7px] text-xs font-[620] text-[var(--text)]">
+                        <span>AI 实时返回</span>
+                        <span className="truncate font-[520] text-[var(--muted)]">
+                          {aiProgress?.message ?? "正在等待 AI 返回..."}
+                        </span>
+                      </div>
+                      <pre className="m-0 max-h-[326px] min-h-[184px] overflow-auto bg-transparent px-[11px] py-2.5 font-mono text-xs leading-[19px] whitespace-pre-wrap break-words text-[#24292f] [overflow-wrap:anywhere]">
+                        {aiProgress?.content || "正在建立流式响应..."}
+                      </pre>
+                    </output>
+                  ) : null}
+                  {aiPreview ? (
+                    <div className="scroll-mask-y-direct-4 grid max-h-[430px] min-h-0 gap-2.5 overflow-auto">
+                      {aiPreview.cases.map((item, index) => (
+                        <div
+                          className="overflow-hidden rounded-[11px] border border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel-2)_46%,white)]"
+                          key={`${item.name}-${index}`}
+                        >
+                          <div className="px-[11px] pt-[9px] text-[13px] font-[680]">{item.name}</div>
+                          {item.description ? (
+                            <div className="px-[11px] pt-0.5 text-xs text-[var(--muted)]">
+                              {item.description}
+                            </div>
+                          ) : null}
+                          <pre className="mb-0 mt-2 max-h-[320px] overflow-auto whitespace-pre-wrap break-words border-t border-[var(--border-soft)] bg-[#fbfbfc] px-3 py-2.5 font-mono text-xs leading-[19px] text-[#24292f] [overflow-wrap:anywhere]">
+                            {item.body}
+                          </pre>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+                <DialogFooter>
+                  <Button
+                    variant="secondary"
+                    type="button"
+                    disabled={aiGenerating}
+                    onClick={() => {
+                      setAiDialogMode(null);
+                      setAiPreview(null);
+                      setAiProgress(null);
+                    }}
+                  >
+                    取消
+                  </Button>
+                  {aiPreview ? (
+                    <Button type="button" onClick={applyAiPreview}>
+                      应用结果
+                    </Button>
+                  ) : (
+                    <Button type="button" disabled={aiGenerating} onClick={generateAiMock}>
+                      {aiGenerating ? (
+                        <>
+                          <Loader2 className="animate-spin" size={14} /> 流式生成中...
+                        </>
+                      ) : (
+                        "生成"
+                      )}
+                    </Button>
+                  )}
+                </DialogFooter>
+              </>
+            ) : null}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={responseFullscreenOpen}
+          onOpenChange={(open) => {
+            if (!open) flushBodyPersist();
+            setResponseFullscreenOpen(open);
+          }}
+        >
+          <DialogContent
+            className="grid h-[min(860px,calc(100vh-40px))] max-h-none w-[min(1180px,calc(100vw-40px))] max-w-none grid-rows-[auto_auto_minmax(0,1fr)] overflow-hidden bg-[color-mix(in_srgb,var(--panel)_98%,white)] sm:max-w-[min(1180px,calc(100vw-40px))]"
+            showCloseButton={false}
+            onKeyDownCapture={(event) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+          >
+            <Button
+              aria-label="关闭全屏编辑"
+              className={cn("absolute right-4 top-4 z-[2]", dialogCloseButtonClass)}
+              size="icon-sm"
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                flushBodyPersist();
+                setResponseFullscreenOpen(false);
+              }}
+            >
+              <X size={14} />
+            </Button>
+            <DialogHeader className="flex items-start justify-between gap-4 pr-[42px]">
+              <div>
+                <DialogTitle>响应体</DialogTitle>
+                <DialogDescription>{previewFile.name}</DialogDescription>
+              </div>
+              <div className="inline-flex flex-none items-center gap-2">
+                <div className={editorActionsClass}>
+                  {aiEnabled ? (
+                    <Button variant="secondary" type="button" onClick={() => openAiDialog("single")}>
+                      <Sparkles size={13} /> AI 编辑
+                    </Button>
+                  ) : null}
+                  <Button
+                    variant="secondary"
+                    type="button"
+                    onClick={() => navigator.clipboard?.writeText(currentBodyDraft)}
+                  >
+                    <Copy size={13} /> 复制
+                  </Button>
+                  <Button variant="secondary" type="button" onClick={formatResponse}>
+                    <FileJson size={13} /> 格式化
+                  </Button>
+                  <Button
+                    aria-pressed={fullscreenWrapLines}
+                    variant="secondary"
+                    type="button"
+                    onClick={() => setFullscreenWrapLines((enabled) => !enabled)}
+                  >
+                    <WrapText size={13} /> 换行
+                  </Button>
+                </div>
+              </div>
+            </DialogHeader>
+            <div className="flex min-h-7 items-center border-y border-[var(--border-soft)] px-[18px] text-xs text-[var(--muted)]">
+              <span className={cn(!jsonStatus.valid && "text-[var(--danger)]")}>{jsonStatus.message}</span>
+            </div>
+            <div className="fullscreen-code-editor" data-file={previewFile.name}>
+              <ResponseBodyEditor
+                key={`${bodyDocumentKey}-fullscreen`}
+                ariaLabel="全屏响应内容"
+                value={currentBodyDraft}
+                wrapLines={fullscreenWrapLines}
+                onChange={(nextBody) => {
+                  setBodyDraft(nextBody);
+                  setBodyDraftKey(bodyDocumentKey);
+                  scheduleBodyPersist(nextBody);
+                }}
+                onBlur={flushBodyPersist}
+              />
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Toaster closeButton duration={2800} position="bottom-right" richColors />
+      </div>
+    </TooltipProvider>
+  );
+}
+
+interface DirectoryNodeProps {
+  endpoints: Endpoint[];
+  dragOverPath: string | null;
+  expandedPaths: Set<string>;
+  focusedNodeId: string;
+  node: TreeNode;
+  overridesFolder: string;
+  onDragOverPath(path: string | null): void;
+  onMoveDirectory(sourcePath: string, targetPath: string): void;
+  onSelect(path: string): void;
+  onSelectEndpoint(endpointId?: string): void;
+  onSetEnabled(path: string, enabled: boolean): void;
+  onSetEndpointEnabled(endpointId: string, enabled: boolean): void;
+  onToggle(path: string): void;
+}
+
+function DirectoryNode({
+  endpoints,
+  dragOverPath,
+  expandedPaths,
+  focusedNodeId,
+  node,
+  overridesFolder,
+  onDragOverPath,
+  onMoveDirectory,
+  onSelect,
+  onSelectEndpoint,
+  onSetEnabled,
+  onSetEndpointEnabled,
+  onToggle,
+}: DirectoryNodeProps) {
+  const endpoint = node.type === "file" ? endpoints.find((item) => item.id === node.endpointId) : null;
+  const childEndpoints = endpoints.filter((item) => isEndpointInDirectory(item, node.path));
+  const relatedEndpoints = endpoint ? [endpoint] : childEndpoints;
+  const enabled = childEndpoints.some((item) => item.enabled !== false);
+  const mixed =
+    childEndpoints.some((item) => item.enabled !== false) &&
+    childEndpoints.some((item) => item.enabled === false);
+  const expanded = expandedPaths.has(node.path);
+  const hasChildren = node.children.length > 0;
+  const active = treeNodeKey(node) === focusedNodeId;
+  const dropActive = dragOverPath === node.path;
+  const currentDirectoryPath = node.path ? `${overridesFolder}/${node.path}` : overridesFolder;
+  const endpointEnabled = endpoint?.enabled !== false;
+
+  if (node.type === "file") {
+    return (
+      <div className="source-node">
+        <div
+          className="source-line"
+          style={{ "--tree-indent": `${Math.max(0, node.depth) * 14}px` } as CSSProperties}
+        >
+          <span className="source-disclosure empty" />
+          <ContextMenu>
+            <ContextMenuTrigger className="source-context-trigger">
+              <button
+                className={cn(
+                  "source-row source-file-row",
+                  active && "active",
+                  !endpointEnabled && "disabled",
+                )}
+                data-directory-path={directoryDomId(node.path)}
+                data-tree-node-id={treeNodeKey(node)}
+                id={treeNodeDomId(treeNodeKey(node))}
+                onClick={() => onSelectEndpoint(node.endpointId)}
+                type="button"
+              >
+                <span className="source-icon">
+                  <FileJson size={14} strokeWidth={1.55} />
+                </span>
+                <span className="source-label">{node.label}</span>
+              </button>
+            </ContextMenuTrigger>
+            <ContextMenuContent className="app-context-menu">
+              <ContextMenuItem
+                disabled={!endpoint}
+                onClick={() => {
+                  if (!endpoint) return;
+                  onSetEndpointEnabled(endpoint.id, !endpointEnabled);
+                }}
+              >
+                {endpointEnabled ? "禁用接口" : "启用接口"}
+              </ContextMenuItem>
+              <ContextMenuItem
+                disabled={!endpoint}
+                onClick={() => {
+                  if (!endpoint) return;
+                  navigator.clipboard?.writeText(endpoint.overridePath);
+                  sonnerToast.success("已复制接口路径");
+                }}
+              >
+                复制接口路径
+              </ContextMenuItem>
+            </ContextMenuContent>
+          </ContextMenu>
+          <Switch
+            aria-label={`${node.label} Mock`}
+            checked={endpointEnabled}
+            className="source-switch"
+            disabled={!endpoint}
+            onCheckedChange={(checked) => {
+              if (endpoint) onSetEndpointEnabled(endpoint.id, checked);
+            }}
+            size="sm"
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="source-node">
+      <div
+        className="source-line"
+        data-drop-target={dropActive ? "true" : undefined}
+        style={{ "--tree-indent": `${Math.max(0, node.depth) * 14}px` } as CSSProperties}
+      >
+        <Button
+          aria-label={expanded ? "收起目录" : "展开目录"}
+          className={cn("source-disclosure", !hasChildren && "empty")}
+          disabled={!hasChildren}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggle(node.path);
+          }}
+          size="icon-xs"
+          type="button"
+          variant="ghost"
+        >
+          {hasChildren ? expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} /> : null}
+        </Button>
+        <ContextMenu>
+          <ContextMenuTrigger className="source-context-trigger">
+            <button
+              aria-expanded={hasChildren ? expanded : undefined}
+              className={cn("source-row", active && "active")}
+              data-directory-path={directoryDomId(node.path)}
+              data-tree-node-id={treeNodeKey(node)}
+              draggable={Boolean(node.path)}
+              id={treeNodeDomId(treeNodeKey(node))}
+              onDragOver={(event) => {
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                onDragOverPath(node.path);
+              }}
+              onDragEnter={(event) => {
+                event.preventDefault();
+                onDragOverPath(node.path);
+              }}
+              onDragLeave={(event) => {
+                if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+                onDragOverPath(null);
+              }}
+              onDragStart={(event) => {
+                if (!node.path) {
+                  event.preventDefault();
+                  return;
+                }
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("application/x-mockkit-directory", node.path);
+              }}
+              onDragEnd={() => onDragOverPath(null)}
+              onDrop={(event) => {
+                event.preventDefault();
+                onDragOverPath(null);
+                const sourcePath = event.dataTransfer.getData("application/x-mockkit-directory");
+                if (sourcePath) onMoveDirectory(sourcePath, node.path);
+              }}
+              onClick={() => onSelect(node.path)}
+              onDoubleClick={() => {
+                if (hasChildren) onToggle(node.path);
+              }}
+              type="button"
+            >
+              <span className="source-icon">
+                {expanded ? (
+                  <FolderOpen size={15} strokeWidth={1.55} />
+                ) : (
+                  <FolderClosed size={15} strokeWidth={1.55} />
+                )}
+              </span>
+              <span className="source-label">{node.label}</span>
+              <Badge
+                className={cn("source-count", node.custom && node.count === 0 && "empty")}
+                variant="secondary"
+              >
+                {node.custom && node.count === 0 ? "新" : node.count}
+              </Badge>
+            </button>
+          </ContextMenuTrigger>
+          <ContextMenuContent className="app-context-menu">
+            <ContextMenuItem
+              onClick={() => {
+                navigator.clipboard?.writeText(currentDirectoryPath);
+                sonnerToast.success("已复制目录路径");
+              }}
+            >
+              复制目录路径
+            </ContextMenuItem>
+            <ContextMenuItem onClick={() => send("revealFolder", { path: node.path })}>
+              在访达中显示
+            </ContextMenuItem>
+          </ContextMenuContent>
+        </ContextMenu>
+        <Switch
+          aria-label={`${node.label} Mock`}
+          checked={enabled}
+          className="source-switch"
+          disabled={relatedEndpoints.length === 0}
+          mixed={mixed}
+          onCheckedChange={(checked) => onSetEnabled(node.path, checked)}
+          size="sm"
+        />
+      </div>
+      {expanded &&
+        node.children.map((child) => (
+          <DirectoryNode
+            endpoints={endpoints}
+            dragOverPath={dragOverPath}
+            expandedPaths={expandedPaths}
+            focusedNodeId={focusedNodeId}
+            key={child.id}
+            node={child}
+            overridesFolder={overridesFolder}
+            onDragOverPath={onDragOverPath}
+            onMoveDirectory={onMoveDirectory}
+            onSelect={onSelect}
+            onSelectEndpoint={onSelectEndpoint}
+            onSetEnabled={onSetEnabled}
+            onSetEndpointEnabled={onSetEndpointEnabled}
+            onToggle={onToggle}
+          />
+        ))}
+    </div>
+  );
+}
