@@ -7,7 +7,17 @@ BUNDLE_ID="dev.codex.mockkit"
 CONFIG="${1:-debug}"
 
 cd "$ROOT"
-npm run build --prefix frontend
+case "${npm_config_user_agent:-}" in
+  pnpm/*)
+    pnpm --dir frontend run build
+    ;;
+  yarn/*)
+    yarn --cwd frontend build
+    ;;
+  *)
+    npm run build --prefix frontend
+    ;;
+esac
 rm -rf "$ROOT/.build/arm64-apple-macosx/$CONFIG/ChromeOverridesManager_ChromeOverridesManager.bundle"
 
 if [[ "$CONFIG" == "release" ]]; then

@@ -30,12 +30,14 @@ That manifest is used to avoid deleting unmanaged files in the Overrides folder.
 ## Run From Source
 
 ```bash
+pnpm install
 swift run
 ```
 
 ## Build a Mac App Bundle
 
 ```bash
+pnpm install
 ./scripts/build-app.sh
 open dist/MockKit.app
 ```

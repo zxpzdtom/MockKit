@@ -2,6 +2,7 @@
   "name": "mockkit",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.24.0",
   "scripts": {
     "mac:build": "./scripts/build-app.sh",
     "mac:build:release": "./scripts/build-app.sh release",
