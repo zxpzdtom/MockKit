@@ -1019,6 +1019,25 @@ export function App() {
     setDeleteTarget({ type: "endpoint", endpointId: item.id, name: item.name || "未命名接口" });
   };
 
+  const requestDeleteEndpointFromTree = (item: Endpoint) => {
+    setDeleteTarget({ type: "endpoint", endpointId: item.id, name: item.name || "未命名接口" });
+  };
+
+  const requestDeleteDirectory = (path: string) => {
+    const directoryEndpointIds = endpoints
+      .filter((item) => isEndpointInDirectory(item, path))
+      .map((item) => item.id);
+    const pathParts = path.split("/").filter(Boolean);
+    const name = pathParts[pathParts.length - 1] ?? "Overrides 根目录";
+    setDeleteTarget({
+      type: "directory",
+      path,
+      name,
+      endpointIds: directoryEndpointIds,
+      count: directoryEndpointIds.length,
+    });
+  };
+
   const confirmDeleteSelectedEndpoints = (endpointIds: string[]) => {
     const ids = new Set(endpointIds);
     let nextSelectedEndpointId: string | null = null;
@@ -1033,6 +1052,41 @@ export function App() {
     setSelectedEndpointId(nextSelectedEndpointId);
     setSelectedCaseId(null);
     showToast(`已删除 ${endpointIds.length} 个接口。`);
+  };
+
+  const confirmDeleteDirectory = (target: Extract<DeleteTarget, { type: "directory" }>) => {
+    const ids = new Set(target.endpointIds);
+    const parentPath = parentDirectoryPath(target.path);
+    let nextSelectedEndpointId: string | null = null;
+    mutateStore((draft) => {
+      draft.endpoints = draft.endpoints.filter((item) => !ids.has(item.id));
+      draft.groupPaths = target.path
+        ? normalizeGroupPaths(
+            (draft.groupPaths ?? []).filter((groupPath) => !isPathInside(groupPath, target.path)),
+          )
+        : [];
+      nextSelectedEndpointId =
+        selectedEndpointId && !ids.has(selectedEndpointId)
+          ? selectedEndpointId
+          : (draft.endpoints.find((item) => isEndpointInDirectory(item, parentPath))?.id ??
+            draft.endpoints[0]?.id ??
+            null);
+    });
+    setExpandedDirectories((current) => {
+      const next = new Set([...current].filter((path) => !isPathInside(path, target.path)));
+      next.add(parentPath);
+      next.add("");
+      return next;
+    });
+    setSelectedDirectory(parentPath);
+    setSelectedEndpointIds(new Set());
+    setSelectedEndpointId(nextSelectedEndpointId);
+    setSelectedCaseId(null);
+    if (!target.path) {
+      showToast(target.count > 0 ? `已清空根目录下的 ${target.count} 个接口。` : "根目录已经是空的。");
+      return;
+    }
+    showToast(target.count > 0 ? `已删除目录和 ${target.count} 个接口。` : "已删除空目录。");
   };
 
   const setGlobalEnabled = (enabled: boolean) => {
@@ -1274,6 +1328,7 @@ export function App() {
     if (deleteTarget.type === "endpoint") confirmDeleteEndpoint(deleteTarget);
     if (deleteTarget.type === "case") confirmDeleteCase(deleteTarget);
     if (deleteTarget.type === "bulk") confirmDeleteSelectedEndpoints(deleteTarget.endpointIds);
+    if (deleteTarget.type === "directory") confirmDeleteDirectory(deleteTarget);
     setDeleteTarget(null);
   };
 
@@ -1462,6 +1517,8 @@ export function App() {
                   onDragOverPath={setDragOverDirectory}
                   onSelect={selectDirectory}
                   onMoveDirectory={moveDirectory}
+                  onRequestDeleteDirectory={requestDeleteDirectory}
+                  onRequestDeleteEndpoint={requestDeleteEndpointFromTree}
                   onSetEnabled={setDirectoryEnabledByPath}
                   onSetEndpointEnabled={updateEndpointEnabled}
                   onSelectEndpoint={selectEndpointFromTree}
@@ -2053,6 +2110,8 @@ interface DirectoryNodeProps {
   overridesFolder: string;
   onDragOverPath(path: string | null): void;
   onMoveDirectory(sourcePath: string, targetPath: string): void;
+  onRequestDeleteDirectory(path: string): void;
+  onRequestDeleteEndpoint(item: Endpoint): void;
   onSelect(path: string): void;
   onSelectEndpoint(endpointId?: string): void;
   onSetEnabled(path: string, enabled: boolean): void;
@@ -2069,6 +2128,8 @@ function DirectoryNode({
   overridesFolder,
   onDragOverPath,
   onMoveDirectory,
+  onRequestDeleteDirectory,
+  onRequestDeleteEndpoint,
   onSelect,
   onSelectEndpoint,
   onSetEnabled,
@@ -2136,6 +2197,15 @@ function DirectoryNode({
                 }}
               >
                 复制接口路径
+              </ContextMenuItem>
+              <ContextMenuItem
+                disabled={!endpoint}
+                variant="destructive"
+                onClick={() => {
+                  if (endpoint) onRequestDeleteEndpoint(endpoint);
+                }}
+              >
+                删除接口
               </ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
@@ -2246,6 +2316,9 @@ function DirectoryNode({
             <ContextMenuItem onClick={() => send("revealFolder", { path: node.path })}>
               在访达中显示
             </ContextMenuItem>
+            <ContextMenuItem variant="destructive" onClick={() => onRequestDeleteDirectory(node.path)}>
+              {node.path ? "删除目录" : "清空根目录"}
+            </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
         <Switch
@@ -2270,6 +2343,8 @@ function DirectoryNode({
             overridesFolder={overridesFolder}
             onDragOverPath={onDragOverPath}
             onMoveDirectory={onMoveDirectory}
+            onRequestDeleteDirectory={onRequestDeleteDirectory}
+            onRequestDeleteEndpoint={onRequestDeleteEndpoint}
             onSelect={onSelect}
             onSelectEndpoint={onSelectEndpoint}
             onSetEnabled={onSetEnabled}

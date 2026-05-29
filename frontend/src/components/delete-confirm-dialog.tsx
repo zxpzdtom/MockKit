@@ -11,7 +11,8 @@ import {
 export type DeleteDialogTarget =
   | { type: "endpoint"; endpointId: string; name: string }
   | { type: "case"; caseId: string; endpointId: string; name: string }
-  | { type: "bulk"; endpointIds: string[]; count: number };
+  | { type: "bulk"; endpointIds: string[]; count: number }
+  | { type: "directory"; path: string; name: string; endpointIds: string[]; count: number };
 
 interface DeleteConfirmDialogProps {
   onConfirm(): void;
@@ -22,12 +23,19 @@ interface DeleteConfirmDialogProps {
 function deleteTitle(target: DeleteDialogTarget) {
   if (target.type === "case") return "删除返回场景？";
   if (target.type === "bulk") return "批量删除接口？";
+  if (target.type === "directory" && !target.path) return "清空根目录？";
+  if (target.type === "directory") return "删除目录？";
   return "删除接口？";
 }
 
 function deleteDescription(target: DeleteDialogTarget) {
   if (target.type === "case") return `确定删除返回场景「${target.name}」吗？`;
   if (target.type === "bulk") return `确定删除选中的 ${target.count} 个接口吗？`;
+  if (target.type === "directory") {
+    if (!target.path) return `确定删除根目录下的 ${target.count} 个接口和所有分组吗？根目录本身会保留。`;
+    if (target.count === 0) return `确定删除空目录「${target.name}」吗？`;
+    return `确定删除目录「${target.name}」及其中的 ${target.count} 个接口吗？`;
+  }
   return `确定删除接口「${target.name}」吗？`;
 }
 

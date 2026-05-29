@@ -119,6 +119,8 @@ struct ParsedCurlRequest {
     method: String,
     headers: HashMap<String, String>,
     body: Option<String>,
+    basic_auth: Option<(String, Option<String>)>,
+    accept_invalid_certs: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -702,11 +704,15 @@ fn perform_request(
 ) -> Result<(String, i32, String), Box<dyn std::error::Error>> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
+        .danger_accept_invalid_certs(request.accept_invalid_certs)
         .build()?;
     let method = reqwest::Method::from_bytes(request.method.as_bytes())?;
     let mut builder = client.request(method, request.url.clone());
     for (key, value) in &request.headers {
         builder = builder.header(key, value);
+    }
+    if let Some((username, password)) = &request.basic_auth {
+        builder = builder.basic_auth(username, password.as_ref());
     }
     if let Some(body) = &request.body {
         builder = builder.body(body.clone());
@@ -734,6 +740,9 @@ fn parse_curl(curl: &str) -> Result<ParsedCurlRequest, Box<dyn std::error::Error
     let mut method: Option<String> = None;
     let mut headers: HashMap<String, String> = HashMap::new();
     let mut body_parts: Vec<String> = vec![];
+    let mut basic_auth: Option<(String, Option<String>)> = None;
+    let mut append_data_to_url = false;
+    let mut accept_invalid_certs = false;
     let mut index = if tokens.first().map(String::as_str) == Some("curl") {
         1
     } else {
@@ -755,12 +764,55 @@ fn parse_curl(curl: &str) -> Result<ParsedCurlRequest, Box<dyn std::error::Error
                     parse_header(value, &mut headers);
                 }
             }
+            "-b" | "--cookie" => {
+                index += 1;
+                if let Some(value) = tokens.get(index) {
+                    parse_cookie(value, &mut headers);
+                }
+            }
+            "-A" | "--user-agent" => {
+                index += 1;
+                if let Some(value) = tokens.get(index) {
+                    insert_header(&mut headers, "User-Agent", value);
+                }
+            }
+            "-e" | "--referer" | "--referrer" => {
+                index += 1;
+                if let Some(value) = tokens.get(index) {
+                    insert_header(&mut headers, "Referer", value);
+                }
+            }
+            "-u" | "--user" => {
+                index += 1;
+                if let Some(value) = tokens.get(index) {
+                    basic_auth = Some(parse_basic_auth(value));
+                }
+            }
+            "--url" => {
+                index += 1;
+                if let Some(value) = tokens.get(index) {
+                    url_string = Some(value.clone());
+                }
+            }
             "-d" | "--data" | "--data-raw" | "--data-binary" | "--data-ascii"
             | "--data-urlencode" => {
                 index += 1;
                 if let Some(value) = tokens.get(index) {
                     body_parts.push(value.clone());
                 }
+            }
+            "--compressed" => {
+                if !has_header(&headers, "Accept-Encoding") {
+                    insert_header(&mut headers, "Accept-Encoding", "gzip, deflate, br, zstd");
+                }
+            }
+            "-k" | "--insecure" => {
+                accept_invalid_certs = true;
+            }
+            "-L" | "--location" => {}
+            "-G" | "--get" => {
+                append_data_to_url = true;
+                method = Some("GET".to_string());
             }
             "-I" | "--head" => {
                 method = Some("HEAD".to_string());
@@ -770,8 +822,32 @@ fn parse_curl(curl: &str) -> Result<ParsedCurlRequest, Box<dyn std::error::Error
                     method = Some(value.to_uppercase());
                 } else if let Some(value) = token.strip_prefix("--header=") {
                     parse_header(value, &mut headers);
+                } else if let Some(value) = token.strip_prefix("--cookie=") {
+                    parse_cookie(value, &mut headers);
+                } else if let Some(value) = token.strip_prefix("--user-agent=") {
+                    insert_header(&mut headers, "User-Agent", value);
+                } else if let Some(value) = token.strip_prefix("--referer=") {
+                    insert_header(&mut headers, "Referer", value);
+                } else if let Some(value) = token.strip_prefix("--referrer=") {
+                    insert_header(&mut headers, "Referer", value);
+                } else if let Some(value) = token.strip_prefix("--user=") {
+                    basic_auth = Some(parse_basic_auth(value));
+                } else if let Some(value) = token.strip_prefix("--url=") {
+                    url_string = Some(value.to_string());
                 } else if token.starts_with("--data-raw=") || token.starts_with("--data=") {
                     let value = token.split_once('=').map(|(_, value)| value).unwrap_or("");
+                    body_parts.push(value.to_string());
+                } else if let Some(value) = token.strip_prefix("-H") {
+                    parse_header(value, &mut headers);
+                } else if let Some(value) = token.strip_prefix("-b") {
+                    parse_cookie(value, &mut headers);
+                } else if let Some(value) = token.strip_prefix("-A") {
+                    insert_header(&mut headers, "User-Agent", value);
+                } else if let Some(value) = token.strip_prefix("-e") {
+                    insert_header(&mut headers, "Referer", value);
+                } else if let Some(value) = token.strip_prefix("-u") {
+                    basic_auth = Some(parse_basic_auth(value));
+                } else if let Some(value) = token.strip_prefix("-d") {
                     body_parts.push(value.to_string());
                 } else if !token.starts_with('-') && url_string.is_none() {
                     url_string = Some(token.clone());
@@ -784,12 +860,22 @@ fn parse_curl(curl: &str) -> Result<ParsedCurlRequest, Box<dyn std::error::Error
     let Some(url_string) = url_string else {
         return Err("没有从 cURL 中解析到有效 URL。".into());
     };
-    let url = Url::parse(&url_string).map_err(|_| "没有从 cURL 中解析到有效 URL。")?;
+    let mut url = Url::parse(&url_string).map_err(|_| "没有从 cURL 中解析到有效 URL。")?;
     if url.host_str().is_none() {
         return Err("没有从 cURL 中解析到有效 URL。".into());
     }
+    if append_data_to_url {
+        for body_part in &body_parts {
+            let query = url.query().map(ToString::to_string);
+            let next_query = match query {
+                Some(current) if !current.is_empty() => format!("{current}&{body_part}"),
+                _ => body_part.clone(),
+            };
+            url.set_query(Some(&next_query));
+        }
+    }
 
-    let body = if body_parts.is_empty() {
+    let body = if body_parts.is_empty() || append_data_to_url {
         None
     } else {
         Some(body_parts.join("&"))
@@ -807,6 +893,8 @@ fn parse_curl(curl: &str) -> Result<ParsedCurlRequest, Box<dyn std::error::Error
         method: resolved_method,
         headers,
         body,
+        basic_auth,
+        accept_invalid_certs,
     })
 }
 
@@ -814,8 +902,52 @@ fn parse_header(header: &str, headers: &mut HashMap<String, String>) {
     if let Some((key, value)) = header.split_once(':') {
         let key = key.trim();
         if !key.is_empty() {
-            headers.insert(key.to_string(), value.trim().to_string());
+            insert_header(headers, key, value.trim());
         }
+    }
+}
+
+fn parse_cookie(cookie: &str, headers: &mut HashMap<String, String>) {
+    let cookie = cookie.trim();
+    if cookie.is_empty() {
+        return;
+    }
+    let existing_key = find_header_key(headers, "Cookie");
+    if let Some(key) = existing_key {
+        if let Some(current) = headers.get_mut(&key) {
+            if !current.trim().is_empty() {
+                current.push_str("; ");
+            }
+            current.push_str(cookie);
+        }
+        return;
+    }
+    headers.insert("Cookie".to_string(), cookie.to_string());
+}
+
+fn insert_header(headers: &mut HashMap<String, String>, key: &str, value: &str) {
+    if let Some(existing_key) = find_header_key(headers, key) {
+        headers.insert(existing_key, value.to_string());
+        return;
+    }
+    headers.insert(key.to_string(), value.to_string());
+}
+
+fn has_header(headers: &HashMap<String, String>, key: &str) -> bool {
+    find_header_key(headers, key).is_some()
+}
+
+fn find_header_key(headers: &HashMap<String, String>, key: &str) -> Option<String> {
+    headers
+        .keys()
+        .find(|candidate| candidate.eq_ignore_ascii_case(key))
+        .cloned()
+}
+
+fn parse_basic_auth(value: &str) -> (String, Option<String>) {
+    match value.split_once(':') {
+        Some((username, password)) => (username.to_string(), Some(password.to_string())),
+        None => (value.to_string(), None),
     }
 }
 
@@ -1613,4 +1745,85 @@ fn sanitized_relative_path(path: &str) -> String {
 
 fn new_id() -> String {
     Uuid::new_v4().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_curl_preserves_cookie_option() {
+        let parsed = parse_curl(
+            "curl 'https://xy-api.ele.me/alsc-xy-base-core-api?method=foo' \
+              -H 'content-type: application/json;charset=UTF-8' \
+              -b 'cna=abc; XY_TOKEN=token-value' \
+              --data-raw '{\"params\":{}}'",
+        )
+        .expect("curl should parse");
+
+        assert_eq!(parsed.method, "POST");
+        assert_eq!(
+            parsed.headers.get("Cookie").map(String::as_str),
+            Some("cna=abc; XY_TOKEN=token-value")
+        );
+    }
+
+    #[test]
+    fn parse_curl_merges_cookie_header_and_option() {
+        let parsed = parse_curl(
+            "curl 'https://example.com/api' \
+              -H 'Cookie: first=1' \
+              --cookie 'second=2'",
+        )
+        .expect("curl should parse");
+
+        assert_eq!(
+            parsed.headers.get("Cookie").map(String::as_str),
+            Some("first=1; second=2")
+        );
+    }
+
+    #[test]
+    fn parse_curl_maps_common_request_options() {
+        let parsed = parse_curl(
+            "curl --url 'https://example.com/api' \
+              -A 'MockKitAgent/1.0' \
+              -e 'https://example.com/page' \
+              -u 'user:pass' \
+              --compressed \
+              --insecure",
+        )
+        .expect("curl should parse");
+
+        assert_eq!(
+            parsed.headers.get("User-Agent").map(String::as_str),
+            Some("MockKitAgent/1.0")
+        );
+        assert_eq!(
+            parsed.headers.get("Referer").map(String::as_str),
+            Some("https://example.com/page")
+        );
+        assert_eq!(
+            parsed.headers.get("Accept-Encoding").map(String::as_str),
+            Some("gzip, deflate, br, zstd")
+        );
+        assert_eq!(
+            parsed.basic_auth,
+            Some(("user".to_string(), Some("pass".to_string())))
+        );
+        assert!(parsed.accept_invalid_certs);
+    }
+
+    #[test]
+    fn parse_curl_get_appends_data_to_query() {
+        let parsed = parse_curl("curl -G 'https://example.com/api?existing=1' -d 'next=2'")
+            .expect("curl should parse");
+
+        assert_eq!(parsed.method, "GET");
+        assert_eq!(
+            parsed.url.as_str(),
+            "https://example.com/api?existing=1&next=2"
+        );
+        assert!(parsed.body.is_none());
+    }
 }
