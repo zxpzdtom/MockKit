@@ -21,9 +21,9 @@ esac
 rm -rf "$ROOT/.build/arm64-apple-macosx/$CONFIG/ChromeOverridesManager_ChromeOverridesManager.bundle"
 
 if [[ "$CONFIG" == "release" ]]; then
-  cargo build --release
+  cargo build --release --bins
 else
-  cargo build
+  cargo build --bins
 fi
 
 if [[ "$CONFIG" == "release" ]]; then
@@ -44,6 +44,8 @@ mkdir -p "$MACOS" "$RESOURCES"
 
 cp "$BUILD_DIR/ChromeOverridesManager" "$MACOS/$APP_NAME"
 cp "$CARGO_DIR/mockkit-core" "$MACOS/mockkit-core"
+mkdir -p "$RESOURCES/CLI"
+cp "$CARGO_DIR/mockkit" "$RESOURCES/CLI/mockkit"
 cp -R "$BUILD_DIR/ChromeOverridesManager_ChromeOverridesManager.bundle" "$RESOURCES/"
 cp "$ROOT/assets/AppIcon.icns" "$RESOURCES/AppIcon.icns"
 

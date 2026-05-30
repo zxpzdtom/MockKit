@@ -42,14 +42,23 @@ function deleteDescription(target: DeleteDialogTarget) {
 export function DeleteConfirmDialog({ onConfirm, onOpenChange, target }: DeleteConfirmDialogProps) {
   return (
     <Dialog open={Boolean(target)} onOpenChange={(open) => !open && onOpenChange(false)}>
-      <DialogContent className="w-[min(420px,calc(100vw-48px))] bg-[color-mix(in_srgb,var(--panel)_98%,white)] sm:max-w-[420px]">
+      <DialogContent
+        className="w-[min(460px,calc(100vw-48px))] gap-5 bg-[color-mix(in_srgb,var(--panel)_98%,white)] sm:max-w-[460px]"
+        onKeyDown={(event) => {
+          if (!target || event.key !== "Enter" || event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          onConfirm();
+        }}
+      >
         {target ? (
           <>
             <DialogHeader className="pr-10">
               <DialogTitle>{deleteTitle(target)}</DialogTitle>
-              <DialogDescription>{deleteDescription(target)}</DialogDescription>
+              <DialogDescription className="pt-0.5 text-[14px] leading-6 text-[var(--muted)] [overflow-wrap:anywhere]">
+                {deleteDescription(target)}
+              </DialogDescription>
             </DialogHeader>
-            <DialogFooter className="[&_[data-variant=destructive]]:bg-[color-mix(in_srgb,var(--danger)_9%,transparent)] [&_[data-variant=destructive]]:text-[var(--danger)] hover:[&_[data-variant=destructive]]:bg-[var(--danger)] hover:[&_[data-variant=destructive]]:text-white">
+            <DialogFooter className="pt-1 [&_[data-slot=button]]:h-9 [&_[data-slot=button]]:min-w-[76px] [&_[data-variant=destructive]]:bg-[color-mix(in_srgb,var(--danger)_9%,transparent)] [&_[data-variant=destructive]]:text-[var(--danger)] hover:[&_[data-variant=destructive]]:bg-[var(--danger)] hover:[&_[data-variant=destructive]]:text-white">
               <Button variant="secondary" type="button" onClick={() => onOpenChange(false)}>
                 取消
               </Button>

@@ -27,6 +27,16 @@ struct AiSettings: Codable {
     var apiKey: String
     var apiKeys: [String: String]?
     var baseUrl: String
+    var cliPresetId: String?
+    var cliPresets: [AiCliPreset]?
+}
+
+struct AiCliPreset: Codable {
+    var id: String
+    var name: String
+    var model: String?
+    var command: String
+    var streamMode: String
 }
 
 struct ChromeProfileState: Codable {
@@ -268,7 +278,7 @@ final class RustCoreClient {
         case "sync":
             timeout = 2.5
         case "generateAiMock":
-            timeout = 90
+            timeout = 180
         case "importCurl":
             timeout = request.fetchResponse == true ? 35 : 8
         default:
@@ -424,7 +434,16 @@ final class StoreController {
     }
 
     func defaultAiSettings() -> AiSettings {
-        AiSettings(enabled: false, provider: "openrouter", model: "", apiKey: "", apiKeys: [:], baseUrl: "")
+        AiSettings(
+            enabled: false,
+            provider: "openrouter",
+            model: "",
+            apiKey: "",
+            apiKeys: [:],
+            baseUrl: "",
+            cliPresetId: "codex-cli",
+            cliPresets: []
+        )
     }
 
     func defaultUiSettings() -> UiSettings {
@@ -505,6 +524,13 @@ final class Bridge: NSObject, WKScriptMessageHandler {
             case "generateAiMock":
                 let request = payload["aiRequest"] as? [String: Any] ?? [:]
                 try startGenerateAiMock(request)
+            case "installCli":
+                let result = try installMockKitCli()
+                let directory = URL(fileURLWithPath: result.path).deletingLastPathComponent().path
+                let suffix = result.inPath
+                    ? "新终端窗口中可直接运行 mockkit。"
+                    : "请将 \(directory) 加入 PATH 后再使用 mockkit。"
+                sendResult(message: "CLI 已安装到 \(result.path)。\(suffix)")
             case "startWindowDrag":
                 startWindowDrag()
             case "toggleZoom":
@@ -727,6 +753,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         )
         settingsItem.target = self
         settingsItem.keyEquivalentModifierMask = [.command]
+        let installCliItem = appMenu.insertItem(
+            withTitle: "Install Command Line Tool",
+            action: #selector(installCommandLineTool(_:)),
+            keyEquivalent: "",
+            at: 1
+        )
+        installCliItem.target = self
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
 
@@ -783,6 +816,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         webView?.evaluateJavaScript("window.__openMockKitSettings?.()")
     }
 
+    @objc private func installCommandLineTool(_ sender: Any?) {
+        do {
+            let result = try installMockKitCli()
+            let pathNote = result.inPath
+                ? "Try `mockkit status` in a new terminal window."
+                : "Add \(URL(fileURLWithPath: result.path).deletingLastPathComponent().path) to your shell PATH, then try `mockkit status`."
+            showAlert(
+                title: "MockKit CLI Installed",
+                message: "The `mockkit` command was installed at:\n\(result.path)\n\n\(pathNote)"
+            )
+        } catch {
+            showAlert(title: "Could Not Install CLI", message: error.localizedDescription)
+        }
+    }
+
     @objc private func openWebInspector(_ sender: Any?) {
         guard let webView else { return }
         webView.isInspectable = true
@@ -835,6 +883,164 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
 
         return nil
     }
+
+    private func showAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.beginSheetModal(for: window)
+    }
+}
+
+private func installMockKitCli() throws -> (path: String, inPath: Bool) {
+    let fileManager = FileManager.default
+    let bundledCli = resolveBundledCli()
+    guard fileManager.isExecutableFile(atPath: bundledCli.path) else {
+        throw NSError(domain: appName, code: 2, userInfo: [NSLocalizedDescriptionKey: "The bundled `mockkit` command was not found. Rebuild the app and try again."])
+    }
+
+    let pathDirectories = shellPathDirectories()
+    let destinations = cliInstallDestinations(pathDirectories: pathDirectories)
+    if let destination = destinations.first(where: { destination in
+        let directory = destination.deletingLastPathComponent()
+        return pathDirectories.contains(directory.path)
+            && fileManager.fileExists(atPath: directory.path)
+            && fileManager.isWritableFile(atPath: directory.path)
+    }) {
+        return try installCliSymlink(from: bundledCli, to: destination, pathDirectories: pathDirectories)
+    }
+
+    let privilegedDestination = URL(fileURLWithPath: "/usr/local/bin/mockkit")
+    try installCliSymlinkWithAdministratorPrivileges(from: bundledCli, to: privilegedDestination)
+    return (privilegedDestination.path, shellPathDirectories().contains(privilegedDestination.deletingLastPathComponent().path))
+}
+
+private func installCliSymlink(
+    from bundledCli: URL,
+    to destination: URL,
+    pathDirectories: Set<String>
+) throws -> (path: String, inPath: Bool) {
+    let fileManager = FileManager.default
+    let directory = destination.deletingLastPathComponent()
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    if fileManager.fileExists(atPath: destination.path) {
+        if destination.resolvingSymlinksInPath() == bundledCli.resolvingSymlinksInPath() {
+            return (destination.path, pathDirectories.contains(directory.path))
+        }
+        let values = try destination.resourceValues(forKeys: [.isSymbolicLinkKey])
+        guard values.isSymbolicLink == true else {
+            throw NSError(domain: appName, code: 4, userInfo: [NSLocalizedDescriptionKey: "`\(destination.path)` already exists and is not a symlink. Move it first, then install the MockKit CLI again."])
+        }
+        try fileManager.removeItem(at: destination)
+    }
+    try fileManager.createSymbolicLink(at: destination, withDestinationURL: bundledCli)
+
+    return (destination.path, pathDirectories.contains(directory.path))
+}
+
+private func installCliSymlinkWithAdministratorPrivileges(from bundledCli: URL, to destination: URL) throws {
+    let command = """
+    set -e
+    mkdir -p \(shellQuote(destination.deletingLastPathComponent().path))
+    if [ -e \(shellQuote(destination.path)) ] && [ ! -L \(shellQuote(destination.path)) ]; then
+      echo "\(destination.path) already exists and is not a symlink." >&2
+      exit 4
+    fi
+    ln -sfn \(shellQuote(bundledCli.path)) \(shellQuote(destination.path))
+    """
+    try runAppleScript(command: "do shell script \(appleScriptStringLiteral(command)) with administrator privileges")
+}
+
+private func resolveBundledCli() -> URL {
+    let bundled = Bundle.main.bundleURL
+        .appendingPathComponent("Contents/Resources/CLI", isDirectory: true)
+        .appendingPathComponent("mockkit")
+    if FileManager.default.isExecutableFile(atPath: bundled.path) {
+        return bundled
+    }
+
+    let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+    let debug = currentDirectory.appendingPathComponent("target/debug/mockkit")
+    if FileManager.default.isExecutableFile(atPath: debug.path) {
+        return debug
+    }
+
+    let release = currentDirectory.appendingPathComponent("target/release/mockkit")
+    if FileManager.default.isExecutableFile(atPath: release.path) {
+        return release
+    }
+
+    return bundled
+}
+
+private func cliInstallDestinations(pathDirectories: Set<String>) -> [URL] {
+    var destinations = [
+        URL(fileURLWithPath: "/opt/homebrew/bin/mockkit"),
+        URL(fileURLWithPath: "/usr/local/bin/mockkit")
+    ]
+    if let home = ProcessInfo.processInfo.environment["HOME"], !home.isEmpty,
+       pathDirectories.contains(URL(fileURLWithPath: home).appendingPathComponent(".local/bin").path) {
+        destinations.append(URL(fileURLWithPath: home).appendingPathComponent(".local/bin/mockkit"))
+    }
+    return destinations
+}
+
+private func shellPathDirectories() -> Set<String> {
+    if let path = loginShellPath(), !path.isEmpty {
+        return Set(path.split(separator: ":").map(String.init))
+    }
+    return Set(
+        (ProcessInfo.processInfo.environment["PATH"] ?? "")
+        .split(separator: ":")
+        .map(String.init)
+    )
+}
+
+private func loginShellPath() -> String? {
+    let shell = ProcessInfo.processInfo.environment["SHELL"].flatMap { $0.isEmpty ? nil : $0 } ?? "/bin/zsh"
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: shell)
+    process.arguments = ["-ilc", "printf %s \"$PATH\""]
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = Pipe()
+    do {
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8)
+    } catch {
+        return nil
+    }
+}
+
+private func runAppleScript(command: String) throws {
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    process.arguments = ["-e", command]
+    let errorPipe = Pipe()
+    process.standardError = errorPipe
+    try process.run()
+    process.waitUntilExit()
+    if process.terminationStatus != 0 {
+        let data = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        let message = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        throw NSError(domain: appName, code: Int(process.terminationStatus), userInfo: [
+            NSLocalizedDescriptionKey: message?.isEmpty == false ? message! : "Command-line tool installation was cancelled or failed."
+        ])
+    }
+}
+
+private func shellQuote(_ value: String) -> String {
+    "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
+}
+
+private func appleScriptStringLiteral(_ value: String) -> String {
+    "\"\(value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\""
 }
 
 let app = NSApplication.shared

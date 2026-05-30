@@ -3,13 +3,18 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+use std::thread;
+use std::time::{Duration, Instant};
 use url::Url;
 use uuid::Uuid;
 
 const MANIFEST_NAME: &str = ".mockkit-manifest.json";
+const APP_NAME: &str = "MockKit";
+const LEGACY_APP_NAMES: [&str; 2] = ["Overrides Studio", "Chrome Overrides Manager"];
 const SUCCESS_TEMPLATE_BODY: &str =
     "{\n  \"code\": 200,\n  \"message\": \"success\",\n  \"data\": {}\n}";
 const FAILURE_TEMPLATE_BODY: &str =
@@ -71,6 +76,20 @@ struct AiSettings {
     #[serde(default)]
     api_keys: HashMap<String, String>,
     base_url: String,
+    cli_preset_id: Option<String>,
+    #[serde(default)]
+    cli_presets: Vec<AiCliPreset>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiCliPreset {
+    id: String,
+    name: String,
+    #[serde(default)]
+    model: String,
+    command: String,
+    stream_mode: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,16 +177,66 @@ struct AiGeneratedCase {
     description: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliStreamMode {
+    PlainText,
+    JsonEvents,
+    ClaudeStreamJson,
+}
+
+#[derive(Debug)]
+struct CliCommandOutput {
+    stdout: String,
+    content: String,
+    streamed_content: bool,
+}
+
 fn main() {
-    if let Err(error) = run() {
+    if let Err(error) = run_entry() {
         let payload = json!({ "error": error.to_string() });
         println!("{}", payload);
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
+fn run_entry() -> Result<(), Box<dyn std::error::Error>> {
     let args = env::args().collect::<Vec<_>>();
+    if should_run_cli(&args) {
+        return run_cli(&args[1..]);
+    }
+    run_core_protocol(&args)
+}
+
+fn should_run_cli(args: &[String]) -> bool {
+    let Some(first) = args.get(1).map(String::as_str) else {
+        return false;
+    };
+    if matches!(first, "--json" | "--store" | "--overrides")
+        || first.starts_with("--store=")
+        || first.starts_with("--overrides=")
+    {
+        return true;
+    }
+    matches!(
+        first,
+        "-h" | "--help"
+            | "help"
+            | "status"
+            | "list"
+            | "show"
+            | "get"
+            | "scan"
+            | "sync"
+            | "publish"
+            | "disable"
+            | "enable"
+            | "import-curl"
+            | "use"
+            | "set-case"
+    )
+}
+
+fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let request_text = if let Some(path) = args.get(1) {
         fs::read_to_string(path)?
     } else {
@@ -318,6 +387,748 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+#[derive(Debug)]
+struct CliOptions {
+    store_path: PathBuf,
+    overrides_folder: Option<String>,
+    migrate_legacy: bool,
+    json: bool,
+}
+
+fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let (options, remaining) = parse_cli_options(args)?;
+    let command = remaining.first().map(String::as_str).unwrap_or("help");
+
+    match command {
+        "-h" | "--help" | "help" => {
+            print_cli_help();
+            Ok(())
+        }
+        "status" => cli_status(&options),
+        "list" => cli_list(&options),
+        "show" | "get" => cli_show(&options, &remaining[1..]),
+        "scan" | "sync" => cli_scan(&options),
+        "publish" => cli_publish(&options),
+        "disable" => cli_disable(&options, &remaining[1..]),
+        "enable" => cli_set_enabled(&options, &remaining[1..], true),
+        "import-curl" => cli_import_curl(&options, &remaining[1..]),
+        "use" | "set-case" => cli_use_case(&options, &remaining[1..]),
+        _ => Err(format!("unknown CLI command: {command}. Run `mockkit help`.").into()),
+    }
+}
+
+fn parse_cli_options(
+    args: &[String],
+) -> Result<(CliOptions, Vec<String>), Box<dyn std::error::Error>> {
+    let mut store_path: Option<PathBuf> = None;
+    let mut migrate_legacy = true;
+    if let Ok(path) = env::var("MOCKKIT_STORE_PATH") {
+        store_path = Some(PathBuf::from(path));
+        migrate_legacy = false;
+    }
+    let mut overrides_folder = env::var("MOCKKIT_OVERRIDES_FOLDER").ok();
+    let mut json_output = false;
+    let mut remaining = vec![];
+    let mut index = 0usize;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--store" => {
+                index += 1;
+                let value = args.get(index).ok_or("--store requires a path")?;
+                store_path = Some(PathBuf::from(value));
+                migrate_legacy = false;
+            }
+            value if value.starts_with("--store=") => {
+                store_path = Some(PathBuf::from(value.trim_start_matches("--store=")));
+                migrate_legacy = false;
+            }
+            "--overrides" => {
+                index += 1;
+                let value = args.get(index).ok_or("--overrides requires a path")?;
+                overrides_folder = Some(value.clone());
+            }
+            value if value.starts_with("--overrides=") => {
+                overrides_folder = Some(value.trim_start_matches("--overrides=").to_string());
+            }
+            "--json" => {
+                json_output = true;
+            }
+            "--" => {
+                remaining.extend(args[index + 1..].iter().cloned());
+                break;
+            }
+            value => remaining.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    Ok((
+        CliOptions {
+            store_path: store_path.unwrap_or_else(default_store_path),
+            overrides_folder,
+            migrate_legacy,
+            json: json_output,
+        },
+        remaining,
+    ))
+}
+
+fn default_store_path() -> PathBuf {
+    if let Ok(home) = env::var("HOME") {
+        return PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join(APP_NAME)
+            .join("store.json");
+    }
+    PathBuf::from(".mockkit-store.json")
+}
+
+fn default_legacy_store_paths() -> Vec<String> {
+    let Ok(home) = env::var("HOME") else {
+        return vec![];
+    };
+    LEGACY_APP_NAMES
+        .iter()
+        .map(|app_name| {
+            PathBuf::from(&home)
+                .join("Library")
+                .join("Application Support")
+                .join(app_name)
+                .join("store.json")
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect()
+}
+
+fn default_overrides_folder() -> String {
+    env::var("MOCKKIT_OVERRIDES_FOLDER")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| {
+            env::var("HOME")
+                .map(|home| format!("{home}/Desktop/mock"))
+                .unwrap_or_else(|_| "mock".to_string())
+        })
+}
+
+fn load_cli_store(options: &CliOptions) -> Result<Store, Box<dyn std::error::Error>> {
+    ensure_parent_dir(&options.store_path)?;
+    if options.migrate_legacy {
+        let legacy_paths = default_legacy_store_paths();
+        migrate_legacy_store(&options.store_path, Some(&legacy_paths))?;
+    }
+    let mut store = read_store(&options.store_path)?
+        .unwrap_or_else(|| default_store(&default_overrides_folder()));
+    normalize_store(&mut store);
+    if let Some(folder) = &options.overrides_folder {
+        store.overrides_folder = folder.clone();
+    }
+    refresh_chrome_profile(&mut store);
+    if let Some(folder) = &options.overrides_folder {
+        store.overrides_folder = folder.clone();
+    }
+    write_store(&options.store_path, &store)?;
+    Ok(store)
+}
+
+fn save_cli_store(options: &CliOptions, store: &Store) -> Result<(), Box<dyn std::error::Error>> {
+    write_store(&options.store_path, store)
+}
+
+fn print_cli_help() {
+    println!(
+        r#"MockKit CLI
+
+Usage:
+  mockkit [--store <path>] [--overrides <folder>] [--json] <command>
+
+Commands:
+  status                         Show store, Chrome profile, and endpoint counts
+  list                           List endpoints with short ids and active cases
+  show <endpoint> [case]         Show one endpoint/case with full mock body
+  show <endpoint> [case] --body  Print only the selected mock body
+  scan                           Import/update files from the Overrides folder
+  publish                        Write active enabled cases into Chrome Overrides
+  disable                        Disable all mocks and remove managed files
+  disable <endpoint...>          Disable one or more endpoints
+  disable --group <path>         Disable endpoints in a group
+  disable --matching <text>      Disable matching endpoints in batch
+  enable <endpoint...>           Enable one or more endpoints
+  enable --group <path>          Enable endpoints in a group
+  enable --matching <text>       Enable matching endpoints in batch
+  import-curl [--fetch] <curl>   Import a cURL command as an endpoint
+  use <endpoint> <case>          Activate a case by endpoint id/name/path and case id/name
+  use <endpoint> <case> --publish
+
+Environment:
+  MOCKKIT_STORE_PATH             Override the default App Support store path
+  MOCKKIT_OVERRIDES_FOLDER       Override the default Chrome Overrides folder
+"#
+    );
+}
+
+fn cli_status(options: &CliOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let store = load_cli_store(options)?;
+    let enabled_endpoints = store
+        .endpoints
+        .iter()
+        .filter(|endpoint| endpoint.enabled != Some(false))
+        .count();
+    let active_cases = store
+        .endpoints
+        .iter()
+        .filter(|endpoint| endpoint.active_case_id.is_some())
+        .count();
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "storePath": options.store_path,
+                "overridesFolder": store.overrides_folder,
+                "mockEnabled": store.mock_enabled,
+                "endpoints": store.endpoints.len(),
+                "enabledEndpoints": enabled_endpoints,
+                "activeCases": active_cases,
+                "chromeProfile": store.chrome_profile,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("Store: {}", options.store_path.display());
+    println!("Overrides: {}", store.overrides_folder);
+    println!(
+        "Mock: {}",
+        if store.mock_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!(
+        "Endpoints: {} total, {} enabled, {} with active cases",
+        store.endpoints.len(),
+        enabled_endpoints,
+        active_cases
+    );
+    if let Some(profile) = &store.chrome_profile {
+        println!(
+            "Chrome: {} ({}, overrides: {})",
+            profile.profile_name,
+            profile.local_overrides_enabled,
+            profile
+                .overrides_folder
+                .as_deref()
+                .unwrap_or("not detected")
+        );
+    }
+    Ok(())
+}
+
+fn cli_list(options: &CliOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let store = load_cli_store(options)?;
+    if options.json {
+        println!("{}", serde_json::to_string_pretty(&store.endpoints)?);
+        return Ok(());
+    }
+    if store.endpoints.is_empty() {
+        println!("No endpoints yet. Run `mockkit scan` or `mockkit import-curl`.");
+        return Ok(());
+    }
+    for endpoint in &store.endpoints {
+        let active_case = active_case(endpoint)
+            .map(|mock_case| mock_case.name.as_str())
+            .unwrap_or("none");
+        let state = if endpoint.enabled == Some(false) {
+            "off"
+        } else {
+            "on"
+        };
+        let short_id = short_id(&endpoint.id);
+        println!("[{state}] {short_id}  {}", endpoint.name);
+        println!("  case: {active_case}");
+        println!("  path: {}", endpoint.override_path);
+        if let Some(group_path) = endpoint
+            .group_path
+            .as_deref()
+            .filter(|path| !path.is_empty())
+        {
+            println!("  group: {group_path}");
+        }
+        println!();
+    }
+    Ok(())
+}
+
+fn cli_show(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let body_only = args
+        .iter()
+        .any(|arg| arg == "--body" || arg == "--body-only");
+    let positional = args
+        .iter()
+        .filter(|arg| arg.as_str() != "--body" && arg.as_str() != "--body-only")
+        .collect::<Vec<_>>();
+    let endpoint_query = positional
+        .first()
+        .ok_or("show requires <endpoint>. Run `mockkit list` to find one.")?
+        .as_str();
+    let case_query = positional.get(1).map(|value| value.as_str());
+    let store = load_cli_store(options)?;
+    let endpoint_index = find_endpoint_index(&store, endpoint_query)?;
+    let endpoint = &store.endpoints[endpoint_index];
+    let mock_case = match case_query {
+        Some(query) => find_case(endpoint, query)?,
+        None => active_case(endpoint).ok_or("endpoint has no cases")?,
+    };
+
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "endpoint": endpoint,
+                "case": mock_case,
+            }))?
+        );
+        return Ok(());
+    }
+
+    if body_only {
+        println!("{}", mock_case.body);
+        return Ok(());
+    }
+
+    println!("endpoint: {}", endpoint.name);
+    println!("id: {}", short_id(&endpoint.id));
+    println!(
+        "enabled: {}",
+        if endpoint.enabled == Some(false) {
+            "off"
+        } else {
+            "on"
+        }
+    );
+    println!("path: {}", endpoint.override_path);
+    if let Some(group_path) = endpoint
+        .group_path
+        .as_deref()
+        .filter(|path| !path.is_empty())
+    {
+        println!("group: {group_path}");
+    }
+    println!("case: {}", mock_case.name);
+    println!("status: {}", mock_case.status);
+    if !mock_case.headers.trim().is_empty() {
+        println!("headers:\n{}", mock_case.headers);
+    }
+    println!("body:");
+    println!("{}", mock_case.body);
+    Ok(())
+}
+
+fn cli_scan(options: &CliOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let mut store = load_cli_store(options)?;
+    let (imported, updated) = sync_overrides(&mut store)?;
+    save_cli_store(options, &store)?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "imported": imported,
+                "updated": updated,
+                "store": store,
+            }))?
+        );
+    } else {
+        println!(
+            "Scanned overrides: imported {}, updated {}.",
+            imported.len(),
+            updated
+        );
+    }
+    Ok(())
+}
+
+fn cli_publish(options: &CliOptions) -> Result<(), Box<dyn std::error::Error>> {
+    let store = load_cli_store(options)?;
+    let written = publish(&store)?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({ "written": written }))?
+        );
+    } else {
+        println!("Published {} managed override files.", written.len());
+    }
+    Ok(())
+}
+
+fn cli_disable(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if !args.is_empty() {
+        return cli_set_enabled(options, &args, false);
+    }
+    let mut store = load_cli_store(options)?;
+    disable(&mut store)?;
+    save_cli_store(options, &store)?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({ "mockEnabled": store.mock_enabled }))?
+        );
+    } else {
+        println!("Mock disabled and managed override files removed.");
+    }
+    Ok(())
+}
+
+fn cli_set_enabled(
+    options: &CliOptions,
+    args: &[String],
+    enabled: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let publish_after = args.iter().any(|arg| arg == "--publish");
+    let mut specs = vec![];
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--publish" => {}
+            "--endpoint" | "-e" => {
+                index += 1;
+                let value = args.get(index).ok_or("--endpoint requires a value")?;
+                specs.push(CliEndpointSelector::Endpoint(value.clone()));
+            }
+            value if value.starts_with("--endpoint=") => {
+                specs.push(CliEndpointSelector::Endpoint(
+                    value.trim_start_matches("--endpoint=").to_string(),
+                ));
+            }
+            "--group" | "-g" => {
+                index += 1;
+                let value = args.get(index).ok_or("--group requires a value")?;
+                specs.push(CliEndpointSelector::Group(value.clone()));
+            }
+            value if value.starts_with("--group=") => {
+                specs.push(CliEndpointSelector::Group(
+                    value.trim_start_matches("--group=").to_string(),
+                ));
+            }
+            "--matching" | "--match" | "-m" => {
+                index += 1;
+                let value = args.get(index).ok_or("--matching requires a value")?;
+                specs.push(CliEndpointSelector::Matching(value.clone()));
+            }
+            value if value.starts_with("--matching=") => {
+                specs.push(CliEndpointSelector::Matching(
+                    value.trim_start_matches("--matching=").to_string(),
+                ));
+            }
+            value if value.starts_with("--match=") => {
+                specs.push(CliEndpointSelector::Matching(
+                    value.trim_start_matches("--match=").to_string(),
+                ));
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown option: {value}").into());
+            }
+            value => specs.push(CliEndpointSelector::Endpoint(value.to_string())),
+        }
+        index += 1;
+    }
+
+    if specs.is_empty() {
+        return Err(format!(
+            "{} requires <endpoint>, --group, or --matching. Use `mockkit disable` with no arguments to disable all mocks.",
+            if enabled { "enable" } else { "disable" }
+        )
+        .into());
+    }
+
+    let mut store = load_cli_store(options)?;
+    let mut matched = matching_endpoint_indices(&store, &specs)?;
+    matched.sort_unstable();
+    matched.dedup();
+    if matched.is_empty() {
+        return Err("no endpoints matched".into());
+    }
+    let matched_count = matched.len();
+
+    let mut changed = vec![];
+    for index in matched {
+        let endpoint = &mut store.endpoints[index];
+        let next_enabled = Some(enabled);
+        if endpoint.enabled != next_enabled {
+            endpoint.enabled = next_enabled;
+            changed.push(json!({
+                "id": endpoint.id,
+                "name": endpoint.name,
+                "overridePath": endpoint.override_path,
+                "groupPath": endpoint.group_path,
+                "enabled": enabled,
+            }));
+        }
+    }
+    save_cli_store(options, &store)?;
+    let written = if publish_after {
+        publish(&store)?
+    } else {
+        vec![]
+    };
+
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "enabled": enabled,
+                "matched": matched_count,
+                "updated": changed.len(),
+                "changed": changed,
+                "published": publish_after,
+                "written": written,
+            }))?
+        );
+    } else {
+        let action = if enabled { "Enabled" } else { "Disabled" };
+        println!(
+            "{action} {} of {} matched endpoints.",
+            changed.len(),
+            matched_count
+        );
+        if publish_after {
+            println!("Published {} managed override files.", written.len());
+        }
+    }
+    Ok(())
+}
+
+fn cli_import_curl(
+    options: &CliOptions,
+    args: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut fetch_response = false;
+    let mut curl_parts = vec![];
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--fetch" => fetch_response = true,
+            "--file" => {
+                index += 1;
+                let path = args.get(index).ok_or("--file requires a path")?;
+                curl_parts.push(fs::read_to_string(path)?);
+            }
+            value if value.starts_with("--file=") => {
+                curl_parts.push(fs::read_to_string(value.trim_start_matches("--file="))?);
+            }
+            value => curl_parts.push(value.to_string()),
+        }
+        index += 1;
+    }
+    if curl_parts.is_empty() && !io::stdin().is_terminal() {
+        let mut stdin = String::new();
+        io::stdin().read_to_string(&mut stdin)?;
+        curl_parts.push(stdin);
+    }
+    let curl = curl_parts.join(" ");
+    if curl.trim().is_empty() {
+        return Err("import-curl requires a cURL command or --file path".into());
+    }
+
+    let mut store = load_cli_store(options)?;
+    let (endpoint_id, case_id) = import_curl(&mut store, &curl, fetch_response)?;
+    save_cli_store(options, &store)?;
+    let written = publish(&store)?;
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "importedEndpointId": endpoint_id,
+                "importedCaseId": case_id,
+                "written": written,
+            }))?
+        );
+    } else {
+        println!("Imported cURL into endpoint {endpoint_id}, case {case_id}.");
+        println!("Published {} managed override files.", written.len());
+    }
+    Ok(())
+}
+
+fn cli_use_case(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let publish_after = args.iter().any(|arg| arg == "--publish");
+    let positional = args
+        .iter()
+        .filter(|arg| arg.as_str() != "--publish")
+        .collect::<Vec<_>>();
+    if positional.len() < 2 {
+        return Err("use requires <endpoint> and <case>".into());
+    }
+    let endpoint_query = positional[0].as_str();
+    let case_query = positional[1].as_str();
+    let mut store = load_cli_store(options)?;
+    let endpoint = find_endpoint_mut(&mut store, endpoint_query)?;
+    let case_id = find_case(endpoint, case_query)?.id.clone();
+    let endpoint_name = endpoint.name.clone();
+    let case_name = find_case(endpoint, &case_id)?.name.clone();
+    endpoint.active_case_id = Some(case_id.clone());
+    save_cli_store(options, &store)?;
+    let written = if publish_after {
+        publish(&store)?
+    } else {
+        vec![]
+    };
+
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "endpoint": endpoint_name,
+                "activeCase": case_name,
+                "published": publish_after,
+                "written": written,
+            }))?
+        );
+    } else {
+        println!("Activated case `{case_name}` for `{endpoint_name}`.");
+        if publish_after {
+            println!("Published {} managed override files.", written.len());
+        }
+    }
+    Ok(())
+}
+
+fn active_case(endpoint: &Endpoint) -> Option<&MockCase> {
+    endpoint
+        .active_case_id
+        .as_ref()
+        .and_then(|case_id| endpoint.cases.iter().find(|item| &item.id == case_id))
+        .or_else(|| endpoint.cases.first())
+}
+
+fn short_id(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
+}
+
+#[derive(Debug)]
+enum CliEndpointSelector {
+    Endpoint(String),
+    Group(String),
+    Matching(String),
+}
+
+fn matching_endpoint_indices(
+    store: &Store,
+    selectors: &[CliEndpointSelector],
+) -> Result<Vec<usize>, Box<dyn std::error::Error>> {
+    let mut indices = vec![];
+    for selector in selectors {
+        match selector {
+            CliEndpointSelector::Endpoint(query) => {
+                indices.push(find_endpoint_index(store, query)?);
+            }
+            CliEndpointSelector::Group(group_path) => {
+                let clean_group = sanitized_relative_path(group_path);
+                let group_matches = store
+                    .endpoints
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, endpoint)| {
+                        endpoint
+                            .group_path
+                            .as_deref()
+                            .map(|path| {
+                                path == clean_group || path.starts_with(&format!("{clean_group}/"))
+                            })
+                            .unwrap_or(false)
+                    })
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>();
+                if group_matches.is_empty() {
+                    return Err(format!("group not found or empty: {group_path}").into());
+                }
+                indices.extend(group_matches);
+            }
+            CliEndpointSelector::Matching(query) => {
+                let query_lower = query.to_lowercase();
+                let text_matches = store
+                    .endpoints
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, endpoint)| endpoint_matches_query(endpoint, query, &query_lower))
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>();
+                if text_matches.is_empty() {
+                    return Err(format!("no endpoints matched: {query}").into());
+                }
+                indices.extend(text_matches);
+            }
+        }
+    }
+    Ok(indices)
+}
+
+fn find_endpoint_index(store: &Store, query: &str) -> Result<usize, Box<dyn std::error::Error>> {
+    let query_lower = query.to_lowercase();
+    let matches = store
+        .endpoints
+        .iter()
+        .enumerate()
+        .filter(|(_, endpoint)| endpoint_matches_query(endpoint, query, &query_lower))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [index] => Ok(*index),
+        [] => Err(format!("endpoint not found: {query}").into()),
+        _ => Err(format!("endpoint query is ambiguous: {query}").into()),
+    }
+}
+
+fn endpoint_matches_query(endpoint: &Endpoint, query: &str, query_lower: &str) -> bool {
+    endpoint.id == query
+        || endpoint.id.starts_with(query)
+        || endpoint.name.eq_ignore_ascii_case(query)
+        || endpoint.override_path == query
+        || endpoint.override_path.to_lowercase().contains(query_lower)
+        || endpoint
+            .group_path
+            .as_deref()
+            .map(|group_path| group_path.to_lowercase().contains(query_lower))
+            .unwrap_or(false)
+        || endpoint
+            .tags
+            .iter()
+            .any(|tag| tag.to_lowercase().contains(query_lower))
+}
+
+fn find_endpoint_mut<'a>(
+    store: &'a mut Store,
+    query: &str,
+) -> Result<&'a mut Endpoint, Box<dyn std::error::Error>> {
+    let index = find_endpoint_index(store, query)?;
+    Ok(&mut store.endpoints[index])
+}
+
+fn find_case<'a>(
+    endpoint: &'a Endpoint,
+    query: &str,
+) -> Result<&'a MockCase, Box<dyn std::error::Error>> {
+    let query_lower = query.to_lowercase();
+    let matches = endpoint
+        .cases
+        .iter()
+        .filter(|mock_case| {
+            mock_case.id == query
+                || mock_case.name.eq_ignore_ascii_case(query)
+                || mock_case.name.to_lowercase().contains(&query_lower)
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [mock_case] => Ok(mock_case),
+        [] => Err(format!("case not found: {query}").into()),
+        _ => Err(format!("case query is ambiguous: {query}").into()),
+    }
+}
+
 fn require_store(store: Option<Store>) -> Result<Store, Box<dyn std::error::Error>> {
     store.ok_or_else(|| "missing store payload".into())
 }
@@ -334,6 +1145,8 @@ fn default_store(default_overrides_folder: &str) -> Store {
             api_key: String::new(),
             api_keys: HashMap::new(),
             base_url: String::new(),
+            cli_preset_id: Some("codex-cli".to_string()),
+            cli_presets: default_cli_presets(),
         }),
         ui_settings: Some(UiSettings {
             theme: "mockkit".to_string(),
@@ -641,36 +1454,13 @@ fn import_curl(
         tags: vec!["curl".to_string()],
         enabled: Some(true),
         active_case_id: Some(default_case_id.clone()),
-        cases: vec![
-            MockCase {
-                id: default_case_id.clone(),
-                name: "Default".to_string(),
-                body: response_body,
-                status: response_status,
-                headers: response_headers,
-            },
-            MockCase {
-                id: new_id(),
-                name: "成功".to_string(),
-                body: SUCCESS_TEMPLATE_BODY.to_string(),
-                status: 200,
-                headers: String::new(),
-            },
-            MockCase {
-                id: new_id(),
-                name: "失败".to_string(),
-                body: FAILURE_TEMPLATE_BODY.to_string(),
-                status: 500,
-                headers: String::new(),
-            },
-            MockCase {
-                id: new_id(),
-                name: "空数据".to_string(),
-                body: EMPTY_TEMPLATE_BODY.to_string(),
-                status: 200,
-                headers: String::new(),
-            },
-        ],
+        cases: vec![MockCase {
+            id: default_case_id.clone(),
+            name: "Default".to_string(),
+            body: response_body,
+            status: response_status,
+            headers: response_headers,
+        }],
     };
     let endpoint_id = endpoint.id.clone();
     store.endpoints.insert(0, endpoint);
@@ -1064,9 +1854,14 @@ fn generate_ai_mock(
         api_key: String::new(),
         api_keys: HashMap::new(),
         base_url: String::new(),
+        cli_preset_id: Some("codex-cli".to_string()),
+        cli_presets: default_cli_presets(),
     });
     if !settings.enabled {
         return Err("AI 功能未启用。".into());
+    }
+    if is_local_cli_provider(&settings.provider) {
+        return generate_ai_mock_with_cli(&settings, request);
     }
     let provider_api_keys = settings
         .api_keys
@@ -1132,7 +1927,12 @@ fn generate_ai_mock(
             .header("HTTP-Referer", "https://github.com");
     }
 
-    emit_ai_progress("connecting", "已连接 AI 服务，等待流式响应...", None, None);
+    emit_ai_progress(
+        "connecting",
+        "正在发送 AI 请求，等待模型开始响应...",
+        None,
+        None,
+    );
     let response = builder.send()?;
     let status = response.status();
     if !status.is_success() {
@@ -1140,22 +1940,30 @@ fn generate_ai_mock(
         return Err(format_ai_error(status.as_u16(), &response_text).into());
     }
 
-    let content = read_ai_stream(response)?;
     emit_ai_progress(
-        "parsing",
-        "正在解析 AI 返回的 JSON...",
+        "connecting",
+        "AI 服务已响应，正在读取流式内容...",
         None,
-        Some(&content),
+        None,
     );
-    let json_text = extract_json_object(&content)?;
+    let content = read_ai_stream(response)?;
+    parse_ai_preview_payload(request.mode, &content)
+}
+
+fn parse_ai_preview_payload(
+    mode: String,
+    content: &str,
+) -> Result<AiPreviewPayload, Box<dyn std::error::Error>> {
+    emit_ai_progress("parsing", "正在解析 AI 返回的 JSON...", None, Some(content));
+    let json_text = extract_json_object(content)?;
     let preview: AiGeneratedPreview = match serde_json::from_str(&json_text) {
         Ok(preview) => preview,
         Err(error) => {
             return Ok(AiPreviewPayload {
-                mode: request.mode,
+                mode,
                 cases: vec![AiGeneratedCase {
                     name: "AI 原始输出".to_string(),
-                    body: pretty_printed_body(&content),
+                    body: pretty_printed_body(content),
                     description: Some(format!("AI 返回未能解析为结构化 JSON：{error}")),
                 }],
             });
@@ -1164,7 +1972,7 @@ fn generate_ai_mock(
     if preview.cases.is_empty() {
         return Err("AI 没有返回可用场景。".into());
     }
-    let cases = preview
+    let mut cases = preview
         .cases
         .into_iter()
         .map(|item| AiGeneratedCase {
@@ -1176,12 +1984,678 @@ fn generate_ai_mock(
             body: generated_body_to_string(&item.body),
             description: item.description,
         })
-        .collect();
+        .collect::<Vec<_>>();
+    if mode == "single" {
+        cases.truncate(1);
+    }
 
-    Ok(AiPreviewPayload {
-        mode: request.mode,
-        cases,
+    Ok(AiPreviewPayload { mode, cases })
+}
+
+fn generate_ai_mock_with_cli(
+    settings: &AiSettings,
+    request: AiMockRequest,
+) -> Result<AiPreviewPayload, Box<dyn std::error::Error>> {
+    let prompt = ai_prompt(&request.mode, &request.instruction, &request.endpoint);
+    let content = match settings.provider.as_str() {
+        "codex-cli" => {
+            if has_selected_cli_preset(settings) {
+                run_custom_cli_preset(settings, &prompt)?
+            } else {
+                run_codex_cli(settings.model.trim(), &prompt)?
+            }
+        }
+        "claude-cli" => {
+            if has_selected_cli_preset(settings) {
+                run_custom_cli_preset(settings, &prompt)?
+            } else {
+                run_claude_cli(settings.model.trim(), &prompt, None)?
+            }
+        }
+        "custom-cli" => run_custom_cli_preset(settings, &prompt)?,
+        _ => return Err("不支持的本地 AI CLI。".into()),
+    };
+    parse_ai_preview_payload(request.mode, &content)
+}
+
+fn has_selected_cli_preset(settings: &AiSettings) -> bool {
+    let Some(preset_id) = settings.cli_preset_id.as_deref() else {
+        return false;
+    };
+    settings
+        .cli_presets
+        .iter()
+        .any(|preset| preset.id == preset_id)
+}
+
+fn default_cli_presets() -> Vec<AiCliPreset> {
+    vec![
+        AiCliPreset {
+            id: "codex-cli".to_string(),
+            name: "Codex CLI".to_string(),
+            model: String::new(),
+            command: "codex exec --json --ephemeral --skip-git-repo-check --sandbox read-only --disable hooks --output-last-message {output} -".to_string(),
+            stream_mode: "json-events".to_string(),
+        },
+        AiCliPreset {
+            id: "claude-cli".to_string(),
+            name: "Claude CLI".to_string(),
+            model: String::new(),
+            command: "claude -p --no-session-persistence --output-format stream-json --include-partial-messages --verbose {prompt}".to_string(),
+            stream_mode: "claude-stream-json".to_string(),
+        },
+    ]
+}
+
+fn run_custom_cli_preset(
+    settings: &AiSettings,
+    prompt: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let preset_id = settings
+        .cli_preset_id
+        .as_deref()
+        .ok_or("请选择本地 CLI 预设。")?;
+    let default_presets = default_cli_presets();
+    let preset = settings
+        .cli_presets
+        .iter()
+        .chain(default_presets.iter())
+        .find(|preset| preset.id == preset_id)
+        .cloned()
+        .ok_or("找不到本地 CLI 预设。")?;
+    if preset.command.trim().is_empty() {
+        return Err("本地 CLI 预设命令为空。".into());
+    }
+
+    emit_ai_progress(
+        "connecting",
+        &format!("正在调用本地 {}...", preset.name),
+        None,
+        None,
+    );
+    let output_path = env::temp_dir().join(format!("mockkit-cli-{}.txt", new_id()));
+    let model = if preset.model.trim().is_empty() {
+        settings.model.trim()
+    } else {
+        preset.model.trim()
+    };
+    let mut command_text = preset.command.clone();
+    command_text = command_text.replace("{model}", &shell_quote(model));
+    command_text = command_text.replace("{output}", &shell_quote(&output_path.to_string_lossy()));
+    let writes_prompt_to_stdin = !command_text.contains("{prompt}");
+    command_text = command_text.replace("{prompt}", &shell_quote(prompt));
+
+    let mode = infer_cli_stream_mode(&command_text, &preset.stream_mode);
+    let mut command = Command::new("/bin/sh");
+    command.arg("-lc").arg(command_text);
+    let output = run_prompt_command_streaming(
+        command,
+        if writes_prompt_to_stdin { prompt } else { "" },
+        &preset.name,
+        mode,
+    )?;
+    let content = fs::read_to_string(&output_path).unwrap_or_else(|_| {
+        if output.content.trim().is_empty() {
+            output.stdout.clone()
+        } else {
+            output.content.clone()
+        }
+    });
+    let _ = fs::remove_file(output_path);
+    if content.trim().is_empty() {
+        return Err(format!("{} 没有返回内容。", preset.name).into());
+    }
+    if !output.streamed_content {
+        emit_simulated_cli_stream(&preset.name, &content);
+    }
+    Ok(content)
+}
+
+fn infer_cli_stream_mode(command_text: &str, configured: &str) -> CliStreamMode {
+    let normalized_command = command_text.to_lowercase();
+    if normalized_command.contains("stream-json") {
+        return CliStreamMode::ClaudeStreamJson;
+    }
+    if normalized_command.contains("--json") || normalized_command.contains("jsonl") {
+        return CliStreamMode::JsonEvents;
+    }
+    match configured {
+        "json-events" => CliStreamMode::JsonEvents,
+        "claude-stream-json" => CliStreamMode::ClaudeStreamJson,
+        _ => CliStreamMode::PlainText,
+    }
+}
+
+fn run_codex_cli(model: &str, prompt: &str) -> Result<String, Box<dyn std::error::Error>> {
+    emit_ai_progress("connecting", "正在调用本地 Codex CLI...", None, None);
+    let output_path = env::temp_dir().join(format!("mockkit-codex-{}.txt", new_id()));
+    let mut command = command_with_user_path("codex");
+    command
+        .arg("exec")
+        .arg("--json")
+        .arg("--ephemeral")
+        .arg("--skip-git-repo-check")
+        .arg("--sandbox")
+        .arg("read-only")
+        .arg("--disable")
+        .arg("hooks")
+        .arg("--output-last-message")
+        .arg(&output_path);
+    if !model.is_empty() {
+        command.arg("--model").arg(model);
+    }
+    command.arg("-");
+
+    let output =
+        run_prompt_command_streaming(command, prompt, "Codex CLI", CliStreamMode::JsonEvents)?;
+    let content = fs::read_to_string(&output_path).unwrap_or_else(|_| {
+        if output.content.trim().is_empty() {
+            output.stdout.clone()
+        } else {
+            output.content.clone()
+        }
+    });
+    let _ = fs::remove_file(output_path);
+    if content.trim().is_empty() {
+        return Err("Codex CLI 没有返回内容。".into());
+    }
+    if !output.streamed_content {
+        emit_simulated_cli_stream("Codex CLI", &content);
+    } else {
+        emit_ai_progress(
+            "streaming",
+            "已收到 Codex CLI 返回。",
+            Some(content.len()),
+            Some(&content),
+        );
+    }
+    Ok(content)
+}
+
+fn run_claude_cli(
+    model: &str,
+    prompt: &str,
+    settings_path: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let cli_name = "Claude CLI";
+    emit_ai_progress(
+        "connecting",
+        &format!("正在调用本地 {cli_name}..."),
+        None,
+        None,
+    );
+    let mut command = command_with_user_path("claude");
+    if let Some(settings_path) = settings_path {
+        command
+            .arg("--settings")
+            .arg(expand_home_path(settings_path));
+    }
+    command.arg("-p").arg("--no-session-persistence");
+    command
+        .arg("--output-format")
+        .arg("stream-json")
+        .arg("--include-partial-messages")
+        .arg("--verbose");
+    if !model.is_empty() {
+        command.arg("--model").arg(model);
+    }
+    command.arg(prompt);
+
+    let output =
+        run_prompt_command_streaming(command, "", cli_name, CliStreamMode::ClaudeStreamJson)?;
+    let content = if output.content.trim().is_empty() {
+        output.stdout
+    } else {
+        output.content
+    };
+    if content.trim().is_empty() {
+        return Err(format!("{cli_name} 没有返回内容。").into());
+    }
+    if !output.streamed_content {
+        emit_simulated_cli_stream(cli_name, &content);
+    } else {
+        emit_ai_progress(
+            "streaming",
+            &format!("已收到 {cli_name} 返回。"),
+            Some(content.len()),
+            Some(&content),
+        );
+    }
+    Ok(content)
+}
+
+fn run_prompt_command_streaming(
+    mut command: Command,
+    stdin_text: &str,
+    label: &str,
+    mode: CliStreamMode,
+) -> Result<CliCommandOutput, Box<dyn std::error::Error>> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if stdin_text.is_empty() {
+        command.stdin(Stdio::null());
+    } else {
+        command.stdin(Stdio::piped());
+    }
+    let mut child = command.spawn().map_err(|error| {
+        format!("无法启动本地 AI CLI：{error}。请确认命令已安装并能在终端中运行。")
+    })?;
+    if !stdin_text.is_empty() {
+        if let Some(stdin) = child.stdin.as_mut() {
+            stdin.write_all(stdin_text.as_bytes())?;
+        }
+    }
+
+    let stderr = child.stderr.take();
+    let stderr_reader = stderr.map(|stderr| {
+        thread::spawn(move || {
+            let mut text = String::new();
+            let mut reader = io::BufReader::new(stderr);
+            let _ = reader.read_to_string(&mut text);
+            text
+        })
+    });
+
+    let mut stdout = child.stdout.take().ok_or("无法读取本地 AI CLI 输出。")?;
+    let mut raw_stdout = String::new();
+    let mut content = String::new();
+    let mut line_buffer = Vec::<u8>::new();
+    let mut streamed_content = false;
+    let mut last_progress = Instant::now();
+
+    loop {
+        let mut buffer = [0_u8; 4096];
+        let read = stdout.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let chunk = &buffer[..read];
+        raw_stdout.push_str(&String::from_utf8_lossy(chunk));
+
+        match mode {
+            CliStreamMode::PlainText => {
+                let delta = String::from_utf8_lossy(chunk).to_string();
+                if append_stream_delta(&mut content, &delta) {
+                    streamed_content = true;
+                    emit_ai_progress(
+                        "streaming",
+                        &format!("正在接收 {label} 返回..."),
+                        Some(content.len()),
+                        Some(&content),
+                    );
+                }
+            }
+            CliStreamMode::JsonEvents | CliStreamMode::ClaudeStreamJson => {
+                line_buffer.extend_from_slice(chunk);
+                while let Some(newline_index) = line_buffer.iter().position(|byte| *byte == b'\n') {
+                    let line = line_buffer.drain(..=newline_index).collect::<Vec<_>>();
+                    let line = String::from_utf8_lossy(&line);
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    let delta = match mode {
+                        CliStreamMode::JsonEvents => {
+                            extract_json_event_delta(line).unwrap_or_default()
+                        }
+                        CliStreamMode::ClaudeStreamJson => {
+                            extract_claude_stream_delta(line).unwrap_or_default()
+                        }
+                        CliStreamMode::PlainText => unreachable!(),
+                    };
+                    if append_stream_delta(&mut content, &delta) {
+                        streamed_content = true;
+                        emit_ai_progress(
+                            "streaming",
+                            &format!("正在接收 {label} 返回..."),
+                            Some(content.len()),
+                            Some(&content),
+                        );
+                    }
+                }
+            }
+        }
+
+        if content.is_empty() && last_progress.elapsed() >= Duration::from_secs(2) {
+            emit_ai_progress(
+                "streaming",
+                &format!("{label} 已启动，正在等待首段内容..."),
+                None,
+                None,
+            );
+            last_progress = Instant::now();
+        }
+    }
+
+    if !line_buffer.is_empty() && mode != CliStreamMode::PlainText {
+        let line = String::from_utf8_lossy(&line_buffer);
+        let line = line.trim();
+        let delta = match mode {
+            CliStreamMode::JsonEvents => extract_json_event_delta(line).unwrap_or_default(),
+            CliStreamMode::ClaudeStreamJson => {
+                extract_claude_stream_delta(line).unwrap_or_default()
+            }
+            CliStreamMode::PlainText => String::new(),
+        };
+        if append_stream_delta(&mut content, &delta) {
+            streamed_content = true;
+            emit_ai_progress(
+                "streaming",
+                &format!("正在接收 {label} 返回..."),
+                Some(content.len()),
+                Some(&content),
+            );
+        }
+    }
+
+    let output = child.wait()?;
+    let stderr = stderr_reader
+        .and_then(|handle| handle.join().ok())
+        .unwrap_or_default();
+
+    if !output.success() {
+        let message = if stderr.trim().is_empty() {
+            raw_stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        return Err(format!("本地 AI CLI 执行失败：{}", truncate_chars(message, 600)).into());
+    }
+
+    if content.trim().is_empty() {
+        content = match mode {
+            CliStreamMode::JsonEvents => {
+                extract_json_result_from_stream(&raw_stdout).unwrap_or_default()
+            }
+            CliStreamMode::ClaudeStreamJson => {
+                extract_claude_result_from_stream(&raw_stdout).unwrap_or_default()
+            }
+            CliStreamMode::PlainText => content,
+        };
+    }
+
+    Ok(CliCommandOutput {
+        stdout: raw_stdout,
+        content,
+        streamed_content,
     })
+}
+
+fn extract_json_event_delta(line: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    let event_type = value
+        .get("type")
+        .or_else(|| value.get("event"))
+        .or_else(|| value.get("event_type"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_lowercase();
+    if event_type.contains("error") {
+        return None;
+    }
+    let is_likely_content_event = event_type.contains("delta")
+        || event_type.contains("content_block")
+        || event_type.contains("message")
+        || event_type.contains("output")
+        || has_json_text_key(
+            &value,
+            &[
+                "delta",
+                "content_delta",
+                "text_delta",
+                "output_text_delta",
+                "output_text",
+            ],
+        );
+    if !is_likely_content_event {
+        return None;
+    }
+    extract_text_from_json_event(&value, false)
+}
+
+fn extract_json_result_from_stream(stdout: &str) -> Option<String> {
+    stdout.lines().rev().find_map(|line| {
+        let value = serde_json::from_str::<Value>(line).ok()?;
+        extract_text_from_json_event(&value, true)
+    })
+}
+
+fn extract_text_from_json_event(value: &Value, include_final_text: bool) -> Option<String> {
+    let direct_text_keys: &[&str] = if include_final_text {
+        &[
+            "delta",
+            "content_delta",
+            "text_delta",
+            "output_text_delta",
+            "text",
+            "content",
+            "output_text",
+            "output",
+            "result",
+            "message",
+            "response",
+        ]
+    } else {
+        &[
+            "delta",
+            "content_delta",
+            "text_delta",
+            "output_text_delta",
+            "text",
+            "content",
+            "output_text",
+        ]
+    };
+    for key in direct_text_keys {
+        if let Some(text) = value.get(*key).and_then(Value::as_str) {
+            return Some(text.to_string());
+        }
+    }
+
+    const NESTED_KEYS: &[&str] = &[
+        "delta", "message", "msg", "event", "data", "item", "content", "output", "response",
+        "choice", "result",
+    ];
+    for key in NESTED_KEYS {
+        if let Some(text) = value
+            .get(*key)
+            .and_then(|item| extract_text_from_json_event(item, include_final_text))
+        {
+            return Some(text);
+        }
+    }
+
+    if let Some(choices) = value.get("choices").and_then(Value::as_array) {
+        for choice in choices {
+            if let Some(text) = extract_text_from_json_event(choice, include_final_text) {
+                return Some(text);
+            }
+        }
+    }
+
+    if let Some(parts) = value.get("content").and_then(Value::as_array) {
+        let text = parts
+            .iter()
+            .filter_map(|item| extract_text_from_json_event(item, include_final_text))
+            .collect::<Vec<_>>()
+            .join("");
+        if !text.is_empty() {
+            return Some(text);
+        }
+    }
+
+    if let Some(parts) = value.get("parts").and_then(Value::as_array) {
+        let text = parts
+            .iter()
+            .filter_map(|item| extract_text_from_json_event(item, include_final_text))
+            .collect::<Vec<_>>()
+            .join("");
+        if !text.is_empty() {
+            return Some(text);
+        }
+    }
+
+    None
+}
+
+fn has_json_text_key(value: &Value, keys: &[&str]) -> bool {
+    if keys.iter().any(|key| value.get(*key).is_some()) {
+        return true;
+    }
+    match value {
+        Value::Object(object) => object.values().any(|item| has_json_text_key(item, keys)),
+        Value::Array(items) => items.iter().any(|item| has_json_text_key(item, keys)),
+        _ => false,
+    }
+}
+
+fn extract_claude_stream_delta(line: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    if value.get("type").and_then(Value::as_str) == Some("content_block_delta") {
+        return value
+            .get("delta")
+            .and_then(|delta| delta.get("text"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+    }
+    value
+        .get("delta")
+        .and_then(|delta| delta.get("text"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn extract_claude_result_from_stream(stdout: &str) -> Option<String> {
+    stdout.lines().rev().find_map(|line| {
+        let value = serde_json::from_str::<Value>(line).ok()?;
+        value
+            .get("result")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+}
+
+fn append_stream_delta(content: &mut String, delta: &str) -> bool {
+    if delta.is_empty() {
+        return false;
+    }
+    if content.is_empty() {
+        content.push_str(delta);
+        return true;
+    }
+    if delta == content || content.ends_with(delta) {
+        return false;
+    }
+    if delta.starts_with(content.as_str()) {
+        content.clear();
+        content.push_str(delta);
+        return true;
+    }
+
+    let max_overlap = content.len().min(delta.len());
+    for overlap in (1..=max_overlap).rev() {
+        if content.is_char_boundary(content.len() - overlap)
+            && delta.is_char_boundary(overlap)
+            && content[content.len() - overlap..] == delta[..overlap]
+        {
+            content.push_str(&delta[overlap..]);
+            return delta.len() > overlap;
+        }
+    }
+
+    content.push_str(delta);
+    true
+}
+
+fn emit_simulated_cli_stream(label: &str, content: &str) {
+    let chars = content.chars().collect::<Vec<_>>();
+    if chars.is_empty() {
+        return;
+    }
+    let mut visible = String::new();
+    let chunk_size = 220usize;
+    for chunk in chars.chunks(chunk_size) {
+        visible.extend(chunk.iter());
+        emit_ai_progress(
+            "streaming",
+            &format!("正在接收 {label} 返回..."),
+            Some(visible.len()),
+            Some(&visible),
+        );
+        thread::sleep(Duration::from_millis(8));
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn command_with_user_path(program: &str) -> Command {
+    let mut command = Command::new(program);
+    command.env("PATH", resolve_user_path());
+    command
+}
+
+fn resolve_user_path() -> String {
+    static CACHED: OnceLock<String> = OnceLock::new();
+
+    CACHED
+        .get_or_init(|| {
+            let fallback_path = fallback_user_path();
+            let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+            Command::new(&shell)
+                .args(["-ilc", "echo ___PATH___:$PATH"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .output()
+                .ok()
+                .and_then(|output| {
+                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                    stdout
+                        .lines()
+                        .find_map(|line| line.strip_prefix("___PATH___:"))
+                        .map(|path| path.trim().to_string())
+                })
+                .filter(|path| !path.is_empty())
+                .unwrap_or(fallback_path)
+        })
+        .clone()
+}
+
+fn fallback_user_path() -> String {
+    let mut paths = env::var("PATH").unwrap_or_default();
+    let home = env::var("HOME").unwrap_or_default();
+    for path in [
+        "/opt/homebrew/bin".to_string(),
+        "/usr/local/bin".to_string(),
+        format!("{home}/.local/bin"),
+        format!("{home}/Library/pnpm"),
+        format!("{home}/.npm-global/bin"),
+        format!("{home}/.yarn/bin"),
+    ] {
+        if !path.is_empty() && !paths.split(':').any(|item| item == path) {
+            if !paths.is_empty() {
+                paths.push(':');
+            }
+            paths.push_str(&path);
+        }
+    }
+    paths
+}
+
+fn is_local_cli_provider(provider: &str) -> bool {
+    matches!(provider, "codex-cli" | "claude-cli" | "custom-cli")
+}
+
+fn expand_home_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Ok(home) = env::var("HOME") {
+            return format!("{home}/{rest}");
+        }
+    }
+    path.to_string()
 }
 
 fn read_ai_stream(
@@ -1189,13 +2663,25 @@ fn read_ai_stream(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let reader = io::BufReader::new(response);
     let mut content = String::new();
-    let mut bytes = 0usize;
     let mut has_stream_event = false;
+    let mut last_progress = Instant::now();
 
     for line in reader.lines() {
         let line = line?;
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with(':') {
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with(':') {
+            if content.is_empty() && last_progress.elapsed() >= Duration::from_secs(2) {
+                emit_ai_progress(
+                    "streaming",
+                    "AI 连接保持中，正在等待首段内容...",
+                    None,
+                    None,
+                );
+                last_progress = Instant::now();
+            }
             continue;
         }
         let Some(data) = trimmed.strip_prefix("data:").map(str::trim) else {
@@ -1215,24 +2701,26 @@ fn read_ai_stream(
         {
             return Err(error.to_string().into());
         }
-        let delta = object
-            .get("choices")
-            .and_then(Value::as_array)
-            .and_then(|choices| choices.first())
-            .and_then(|choice| choice.get("delta"))
-            .and_then(extract_stream_content)
-            .unwrap_or_default();
-        if delta.is_empty() {
+        let delta = extract_api_stream_delta(&object).unwrap_or_default();
+        if !append_stream_delta(&mut content, &delta) {
+            if content.is_empty() && last_progress.elapsed() >= Duration::from_secs(2) {
+                emit_ai_progress(
+                    "streaming",
+                    "已收到 AI 事件，正在等待内容增量...",
+                    None,
+                    None,
+                );
+                last_progress = Instant::now();
+            }
             continue;
         }
-        bytes += delta.len();
-        content.push_str(&delta);
         emit_ai_progress(
             "streaming",
             "正在接收 AI 返回...",
-            Some(bytes),
+            Some(content.len()),
             Some(&content),
         );
+        last_progress = Instant::now();
     }
 
     if content.trim().is_empty() {
@@ -1244,24 +2732,36 @@ fn read_ai_stream(
     Ok(content)
 }
 
-fn extract_stream_content(value: &Value) -> Option<String> {
-    if let Some(content) = value.get("content").and_then(Value::as_str) {
-        return Some(content.to_string());
+fn extract_api_stream_delta(value: &Value) -> Option<String> {
+    if let Some(choices) = value.get("choices").and_then(Value::as_array) {
+        let text = choices
+            .iter()
+            .filter_map(|choice| {
+                choice
+                    .get("delta")
+                    .or_else(|| choice.get("message"))
+                    .or_else(|| choice.get("text"))
+                    .and_then(|item| extract_text_from_json_event(item, false))
+            })
+            .collect::<Vec<_>>()
+            .join("");
+        if !text.is_empty() {
+            return Some(text);
+        }
     }
-    if let Some(parts) = value.get("content").and_then(Value::as_array) {
-        return Some(
-            parts
-                .iter()
-                .filter_map(|part| {
-                    part.get("text")
-                        .or_else(|| part.get("content"))
-                        .and_then(Value::as_str)
-                })
-                .collect::<Vec<_>>()
-                .join(""),
-        );
+
+    if let Some(candidates) = value.get("candidates").and_then(Value::as_array) {
+        let text = candidates
+            .iter()
+            .filter_map(|candidate| extract_text_from_json_event(candidate, false))
+            .collect::<Vec<_>>()
+            .join("");
+        if !text.is_empty() {
+            return Some(text);
+        }
     }
-    None
+
+    extract_text_from_json_event(value, false)
 }
 
 fn emit_ai_progress(stage: &str, message: &str, bytes: Option<usize>, content: Option<&str>) {
@@ -1535,7 +3035,35 @@ fn normalize_store(store: &mut Store) {
             api_key: String::new(),
             api_keys: HashMap::new(),
             base_url: String::new(),
+            cli_preset_id: Some("codex-cli".to_string()),
+            cli_presets: default_cli_presets(),
         });
+    }
+    if let Some(settings) = &mut store.ai_settings {
+        let existing_presets = settings.cli_presets.clone();
+        let custom_presets = existing_presets
+            .iter()
+            .filter(|preset| !matches!(preset.id.as_str(), "codex-cli" | "claude-cli"))
+            .cloned()
+            .collect::<Vec<_>>();
+        settings.cli_presets = default_cli_presets()
+            .into_iter()
+            .map(|default_preset| {
+                existing_presets
+                    .iter()
+                    .find(|preset| preset.id == default_preset.id)
+                    .cloned()
+                    .unwrap_or(default_preset)
+            })
+            .chain(custom_presets)
+            .collect();
+        if settings.cli_preset_id.is_none() && is_local_cli_provider(&settings.provider) {
+            settings.cli_preset_id = Some(if settings.provider == "custom-cli" {
+                "codex-cli".to_string()
+            } else {
+                settings.provider.clone()
+            });
+        }
     }
     if store.ui_settings.is_none() {
         store.ui_settings = Some(UiSettings {
@@ -1825,5 +3353,121 @@ mod tests {
             "https://example.com/api?existing=1&next=2"
         );
         assert!(parsed.body.is_none());
+    }
+
+    #[test]
+    fn api_stream_delta_supports_openai_and_gemini_shapes() {
+        let openai = json!({
+            "choices": [
+                { "delta": { "content": "hello" } }
+            ]
+        });
+        let gemini = json!({
+            "candidates": [
+                { "content": { "parts": [{ "text": " world" }] } }
+            ]
+        });
+
+        assert_eq!(extract_api_stream_delta(&openai).as_deref(), Some("hello"));
+        assert_eq!(extract_api_stream_delta(&gemini).as_deref(), Some(" world"));
+    }
+
+    #[test]
+    fn cli_json_delta_supports_common_output_text_events() {
+        let line = r#"{"type":"response.output_text.delta","delta":"hello"}"#;
+        assert_eq!(extract_json_event_delta(line).as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn append_stream_delta_deduplicates_full_snapshots() {
+        let mut content = String::from("hello");
+        assert!(append_stream_delta(&mut content, "hello world"));
+        assert_eq!(content, "hello world");
+        assert!(!append_stream_delta(&mut content, " world"));
+        assert_eq!(content, "hello world");
+    }
+
+    #[test]
+    fn import_curl_creates_only_default_case_for_new_endpoint() {
+        let mut store = default_store("");
+        let (_endpoint_id, case_id) =
+            import_curl(&mut store, "curl 'https://example.com/api/users'", false)
+                .expect("curl should import");
+
+        assert_eq!(store.endpoints.len(), 1);
+        let endpoint = &store.endpoints[0];
+        assert_eq!(endpoint.active_case_id.as_deref(), Some(case_id.as_str()));
+        assert_eq!(endpoint.cases.len(), 1);
+        assert_eq!(endpoint.cases[0].name, "Default");
+    }
+
+    #[test]
+    fn cli_endpoint_selectors_match_endpoint_group_and_text() {
+        let mut store = default_store("");
+        store.endpoints = vec![
+            Endpoint {
+                id: "endpoint-users".to_string(),
+                name: "Users".to_string(),
+                method: "GET".to_string(),
+                override_path: "example.com/api/users".to_string(),
+                group_path: Some("api/users".to_string()),
+                description: String::new(),
+                tags: vec!["account".to_string()],
+                enabled: Some(true),
+                active_case_id: None,
+                cases: vec![],
+            },
+            Endpoint {
+                id: "endpoint-orders".to_string(),
+                name: "Orders".to_string(),
+                method: "GET".to_string(),
+                override_path: "example.com/api/orders".to_string(),
+                group_path: Some("api/orders".to_string()),
+                description: String::new(),
+                tags: vec!["commerce".to_string()],
+                enabled: Some(true),
+                active_case_id: None,
+                cases: vec![],
+            },
+        ];
+
+        assert_eq!(
+            matching_endpoint_indices(
+                &store,
+                &[CliEndpointSelector::Endpoint("endpoint-users".to_string())],
+            )
+            .expect("endpoint should match"),
+            vec![0]
+        );
+        assert_eq!(
+            matching_endpoint_indices(
+                &store,
+                &[CliEndpointSelector::Endpoint("endpoint".to_string())],
+            )
+            .expect_err("ambiguous short id should be rejected")
+            .to_string(),
+            "endpoint query is ambiguous: endpoint"
+        );
+        assert_eq!(
+            matching_endpoint_indices(
+                &store,
+                &[CliEndpointSelector::Endpoint("endpoint-u".to_string())],
+            )
+            .expect("short id should match"),
+            vec![0]
+        );
+        assert_eq!(
+            matching_endpoint_indices(&store, &[CliEndpointSelector::Group("api".to_string())])
+                .expect("group should match"),
+            vec![0, 1]
+        );
+        assert_eq!(
+            matching_endpoint_indices(
+                &store,
+                &[CliEndpointSelector::Matching("commerce".to_string())]
+            )
+            .expect("tag should match"),
+            vec![1]
+        );
     }
 }

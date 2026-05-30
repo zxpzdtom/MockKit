@@ -1,6 +1,6 @@
 import { json } from "@codemirror/lang-json";
 import { foldGutter } from "@codemirror/language";
-import { EditorView, type ViewUpdate } from "@codemirror/view";
+import { EditorView, type ViewUpdate, keymap } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
 import { useCallback, useMemo } from "react";
 
@@ -8,8 +8,10 @@ type ResponseBodyEditorProps = {
   ariaLabel?: string;
   value: string;
   wrapLines: boolean;
+  readOnly?: boolean;
   onBlur(): void;
   onChange(value: string): void;
+  onModEnter?(): void;
 };
 
 function createFoldMarker(open: boolean) {
@@ -24,8 +26,10 @@ export default function ResponseBodyEditor({
   ariaLabel = "响应内容",
   value,
   wrapLines,
+  readOnly = false,
   onBlur,
   onChange,
+  onModEnter,
 }: ResponseBodyEditorProps) {
   const extensions = useMemo(
     () => [
@@ -34,21 +38,34 @@ export default function ResponseBodyEditor({
         markerDOM: createFoldMarker,
       }),
       ...(wrapLines ? [EditorView.lineWrapping] : []),
+      ...(onModEnter
+        ? [
+            keymap.of([
+              {
+                key: "Mod-Enter",
+                run: () => {
+                  onModEnter();
+                  return true;
+                },
+              },
+            ]),
+          ]
+        : []),
     ],
-    [wrapLines],
+    [onModEnter, wrapLines],
   );
   const handleUpdate = useCallback(
     (update: ViewUpdate) => {
+      if (readOnly) return;
       if (!update.docChanged) return;
       onChange(update.state.doc.toString());
     },
-    [onChange],
+    [onChange, readOnly],
   );
 
   return (
     <CodeMirror
       aria-label={ariaLabel}
-      className="scroll-mask-y-direct-4"
       value={value}
       height="100%"
       basicSetup={{
@@ -61,6 +78,8 @@ export default function ResponseBodyEditor({
         lineNumbers: true,
       }}
       extensions={extensions}
+      editable={!readOnly}
+      readOnly={readOnly}
       theme="light"
       onUpdate={handleUpdate}
       onBlur={onBlur}

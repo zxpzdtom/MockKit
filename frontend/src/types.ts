@@ -24,7 +24,24 @@ export interface UiSettings {
   theme: AppTheme;
 }
 
-export type AiProvider = "openai" | "openrouter" | "gemini" | "compatible";
+export type AiProvider =
+  | "openai"
+  | "openrouter"
+  | "gemini"
+  | "compatible"
+  | "codex-cli"
+  | "claude-cli"
+  | "custom-cli";
+
+export type AiCliStreamMode = "plain" | "json-events" | "claude-stream-json";
+
+export interface AiCliPreset {
+  id: string;
+  name: string;
+  model?: string;
+  command: string;
+  streamMode: AiCliStreamMode;
+}
 
 export interface AiSettings {
   enabled: boolean;
@@ -33,6 +50,8 @@ export interface AiSettings {
   apiKey: string;
   apiKeys?: Partial<Record<AiProvider, string>>;
   baseUrl: string;
+  cliPresetId?: string;
+  cliPresets?: AiCliPreset[];
 }
 
 export interface ChromeProfileState {

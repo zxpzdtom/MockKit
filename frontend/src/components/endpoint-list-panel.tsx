@@ -85,14 +85,11 @@ export function EndpointListPanel({
           />
           <Input
             aria-label="搜索接口"
-            autoCapitalize="none"
             autoComplete="off"
-            autoCorrect="off"
             className="h-8 rounded-lg border-[var(--border)] bg-[color-mix(in_srgb,var(--panel)_82%,var(--panel-2))] pl-8 pr-[34px] text-[var(--text)]"
             enterKeyHint="search"
             onChange={(event) => onQueryChange(event.target.value)}
             placeholder={searchRegexEnabled ? "输入正则表达式" : "搜索接口、路径或说明"}
-            spellCheck={false}
             type="text"
             value={query}
           />
@@ -186,6 +183,7 @@ export function EndpointListPanel({
                     <Checkbox
                       aria-label={`选择接口 ${item.name}`}
                       checked={selected}
+                      className="endpoint-row-checkbox"
                       onCheckedChange={(checked) => onToggleEndpointSelection(item.id, checked === true)}
                     />
                   </span>

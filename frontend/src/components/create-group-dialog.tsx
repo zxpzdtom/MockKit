@@ -29,7 +29,17 @@ export function CreateGroupDialog({
 }: CreateGroupDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[min(480px,calc(100vw-48px))] bg-[color-mix(in_srgb,var(--panel)_98%,white)]">
+      <DialogContent
+        className="w-[min(480px,calc(100vw-48px))] bg-[color-mix(in_srgb,var(--panel)_98%,white)]"
+        onKeyDown={(event) => {
+          if (event.defaultPrevented) return;
+          if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey) || event.nativeEvent.isComposing) {
+            return;
+          }
+          event.preventDefault();
+          if (cleanGroupPath(draft)) onCreate();
+        }}
+      >
         <form
           className="grid gap-6"
           onSubmit={(event) => {
@@ -46,13 +56,10 @@ export function CreateGroupDialog({
             <Input
               id="create-group-path"
               aria-label="业务分组路径"
-              autoCapitalize="none"
               autoComplete="off"
-              autoCorrect="off"
               autoFocus
               className="h-10 px-3"
               placeholder="用户中心/登录"
-              spellCheck={false}
               value={draft}
               onChange={(event) => onDraftChange(event.target.value)}
             />

@@ -20,6 +20,9 @@ const aiProviderLabels: Record<AiProvider, string> = {
   openai: "OpenAI",
   gemini: "Gemini",
   compatible: "OpenAI 兼容",
+  "codex-cli": "Codex CLI",
+  "claude-cli": "Claude CLI",
+  "custom-cli": "自定义 CLI",
 };
 
 const aiProviderItems = Object.entries(aiProviderLabels).map(([value, label]) => ({
@@ -61,7 +64,17 @@ export function AiSettingsDialog({
 }: AiSettingsDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="w-[min(640px,calc(100vw-56px))] max-w-[min(640px,calc(100vw-56px))] overflow-hidden bg-[color-mix(in_srgb,var(--panel)_98%,white)] sm:max-w-[640px]">
+      <DialogContent
+        className="w-[min(640px,calc(100vw-56px))] max-w-[min(640px,calc(100vw-56px))] overflow-hidden bg-[color-mix(in_srgb,var(--panel)_98%,white)] sm:max-w-[640px]"
+        onKeyDown={(event) => {
+          if (event.defaultPrevented) return;
+          if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey) || event.nativeEvent.isComposing) {
+            return;
+          }
+          event.preventDefault();
+          onOpenChange(false);
+        }}
+      >
         <DialogHeader className="pr-10">
           <DialogTitle>AI 设置</DialogTitle>
           <DialogDescription>配置用于生成 Mock 数据的模型。</DialogDescription>

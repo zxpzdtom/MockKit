@@ -1,3 +1,7 @@
+import { EditorView, type ViewUpdate, keymap, placeholder } from "@codemirror/view";
+import CodeMirror from "@uiw/react-codemirror";
+import { useCallback, useMemo } from "react";
+
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -9,7 +13,10 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+
+const CURL_PLACEHOLDER = `curl 'https://example.com/api/user/profile' \\
+  -H 'accept: application/json' \\
+  --data-raw '{"id":1}'`;
 
 interface ImportCurlDialogProps {
   curlFetchResponse: boolean;
@@ -32,23 +39,71 @@ export function ImportCurlDialog({
   onOpenChange,
   open,
 }: ImportCurlDialogProps) {
+  const extensions = useMemo(
+    () => [
+      EditorView.lineWrapping,
+      placeholder(CURL_PLACEHOLDER),
+      keymap.of([
+        {
+          key: "Mod-Enter",
+          run: () => {
+            if (importingCurl || !curlText.trim()) return true;
+            onImport();
+            return true;
+          },
+        },
+      ]),
+    ],
+    [curlText, importingCurl, onImport],
+  );
+  const handleUpdate = useCallback(
+    (update: ViewUpdate) => {
+      if (importingCurl || !update.docChanged) return;
+      onCurlTextChange(update.state.doc.toString());
+    },
+    [importingCurl, onCurlTextChange],
+  );
+
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => !importingCurl && onOpenChange(nextOpen)}>
-      <DialogContent className="w-[min(820px,calc(100vw-56px))] max-w-[min(820px,calc(100vw-56px))] overflow-hidden bg-[color-mix(in_srgb,var(--panel)_98%,white)] sm:max-w-[820px]">
+      <DialogContent
+        className="w-[min(820px,calc(100vw-56px))] max-w-[min(820px,calc(100vw-56px))] overflow-hidden bg-[color-mix(in_srgb,var(--panel)_98%,white)] sm:max-w-[820px]"
+        onKeyDown={(event) => {
+          if (event.defaultPrevented) return;
+          if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey) || event.nativeEvent.isComposing) {
+            return;
+          }
+          event.preventDefault();
+          if (!importingCurl && curlText.trim()) onImport();
+        }}
+      >
         <DialogHeader className="pr-11">
           <DialogTitle>导入 cURL</DialogTitle>
           <DialogDescription>粘贴从 DevTools 复制出来的 cURL，自动生成 Override 接口。</DialogDescription>
         </DialogHeader>
         <div className="grid min-w-0 gap-3">
-          <Textarea
-            aria-label="cURL 内容"
-            className="box-border h-[210px] min-h-[210px] max-h-[210px] w-full min-w-0 resize-none overflow-auto whitespace-pre rounded-[10px] border border-[var(--border)] bg-[#fbfbfc] p-3 font-mono text-xs leading-[19px] text-[var(--text)] shadow-[var(--control-shadow)] outline-none focus:border-[color-mix(in_srgb,var(--accent)_38%,var(--border))] focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--accent)_12%,transparent),var(--control-shadow)] focus-visible:border-[color-mix(in_srgb,var(--accent)_38%,var(--border))] focus-visible:ring-0"
-            placeholder={`curl 'https://example.com/api/user/profile' \\
-  -H 'accept: application/json' \\
-  --data-raw '{"id":1}'`}
-            value={curlText}
-            onChange={(event) => onCurlTextChange(event.target.value)}
-          />
+          <div className="curl-code-editor h-[210px]">
+            <CodeMirror
+              aria-label="cURL 内容"
+              className="scroll-mask-y-direct-4"
+              basicSetup={{
+                autocompletion: false,
+                bracketMatching: true,
+                closeBrackets: true,
+                foldGutter: false,
+                highlightActiveLine: true,
+                highlightActiveLineGutter: true,
+                lineNumbers: true,
+              }}
+              editable={!importingCurl}
+              extensions={extensions}
+              height="100%"
+              readOnly={importingCurl}
+              theme="light"
+              value={curlText}
+              onUpdate={handleUpdate}
+            />
+          </div>
           <div className="flex items-center gap-[9px] text-[13px] text-[var(--text)]">
             <Checkbox
               id="curl-fetch-response"
@@ -62,7 +117,7 @@ export function ImportCurlDialog({
             </Label>
           </div>
           <div className="text-[13px] text-[var(--muted)]">
-            不勾选时只导入路径和请求信息，场景会使用基础成功模板，适合不方便直接请求的接口。
+            不勾选时只导入路径和请求信息，并生成一个 Default 场景，适合不方便直接请求的接口。
           </div>
         </div>
         <DialogFooter>

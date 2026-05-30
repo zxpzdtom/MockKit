@@ -34,6 +34,67 @@ pnpm install
 swift run
 ```
 
+## CLI
+
+MockKit also ships a command-line interface through the same Rust core used by
+the macOS app. Build it with:
+
+```bash
+cargo build
+```
+
+During development, run:
+
+```bash
+./target/debug/mockkit status
+./target/debug/mockkit list
+./target/debug/mockkit show "example.com/api/users"
+./target/debug/mockkit show "example.com/api/users" "成功" --body
+./target/debug/mockkit scan
+./target/debug/mockkit publish
+./target/debug/mockkit disable
+./target/debug/mockkit disable "example.com/api/users" --publish
+./target/debug/mockkit disable --group "订单/列表" --publish
+./target/debug/mockkit enable --matching "users" --publish
+./target/debug/mockkit import-curl "curl 'https://example.com/api/users'"
+./target/debug/mockkit use "example.com/api/users" "成功" --publish
+```
+
+After building the app bundle, open MockKit and choose:
+
+```text
+MockKit -> Install Command Line Tool
+```
+
+That installs the bundled CLI as `mockkit`, so new terminal windows can run:
+
+```bash
+mockkit status
+mockkit list
+mockkit show "example.com/api/users"
+mockkit publish
+mockkit disable "example.com/api/users" --publish
+mockkit enable --matching "users" --publish
+mockkit use "example.com/api/users" "成功" --publish
+```
+
+Useful options:
+
+```bash
+./target/debug/mockkit --json status
+./target/debug/mockkit --store ./store.json --overrides ./overrides scan
+cat request.curl | ./target/debug/mockkit import-curl --fetch
+```
+
+By default, the CLI reads the same store as the app:
+
+```text
+~/Library/Application Support/MockKit/store.json
+```
+
+You can override paths with `--store`, `--overrides`, `MOCKKIT_STORE_PATH`, or
+`MOCKKIT_OVERRIDES_FOLDER`.
+
 ## Build a Mac App Bundle
 
 ```bash

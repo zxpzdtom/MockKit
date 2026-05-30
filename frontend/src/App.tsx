@@ -34,6 +34,7 @@ import { Tooltip, TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { FileContents } from "@pierre/diffs/react";
 import {
+  Check,
   ChevronDown,
   ChevronRight,
   Copy,
@@ -53,6 +54,7 @@ import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
+  ReactNode,
   WheelEvent as ReactWheelEvent,
 } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -60,6 +62,7 @@ import { toast as sonnerToast } from "sonner";
 import { formatJson, getJsonStatus } from "./lib/json";
 import { send } from "./lib/native";
 import type {
+  AiCliPreset,
   AiPreview,
   AiProgress,
   AiSettings,
@@ -81,7 +84,28 @@ const defaultAiSettings: AiSettings = {
   apiKey: "",
   apiKeys: {},
   baseUrl: "",
+  cliPresetId: "codex-cli",
+  cliPresets: [],
 };
+type SettingsSection = "appearance" | "ai" | "cli";
+const defaultCliPresets: AiCliPreset[] = [
+  {
+    id: "codex-cli",
+    name: "Codex CLI",
+    model: "",
+    command:
+      "codex exec --json --ephemeral --skip-git-repo-check --sandbox read-only --disable hooks --output-last-message {output} -",
+    streamMode: "json-events",
+  },
+  {
+    id: "claude-cli",
+    name: "Claude CLI",
+    model: "",
+    command:
+      "claude -p --no-session-persistence --output-format stream-json --include-partial-messages --verbose {prompt}",
+    streamMode: "claude-stream-json",
+  },
+];
 const defaultUiSettings: UiSettings = {
   theme: "mockkit",
 };
@@ -97,6 +121,7 @@ const appThemes = new Set<AppTheme>([
   "retro-arcade",
   "bubblegum",
 ]);
+const localAiProviders = new Set<AiSettings["provider"]>(["codex-cli", "claude-cli", "custom-cli"]);
 const nativeDragRegionSelector = "[data-native-drag-region='true']";
 const nativeNoDragSelector = [
   "button",
@@ -132,11 +157,142 @@ function activeCase(endpoint: Endpoint | null) {
   return endpoint.cases.find((item) => item.id === endpoint.activeCaseId) ?? endpoint.cases[0] ?? null;
 }
 
+function renderReadablePath(path: string): ReactNode {
+  const nodes: ReactNode[] = [];
+  const segments = path.split("/");
+  let segmentOffset = 0;
+
+  for (const segment of segments) {
+    const pieces = segment.split(".");
+    const segmentNodes: ReactNode[] = [];
+    let pieceOffset = segmentOffset;
+
+    for (const piece of pieces) {
+      segmentNodes.push(
+        <span key={`piece-${pieceOffset}`}>
+          {piece ? <span className="endpoint-path-token">{piece}</span> : null}
+          {pieceOffset + piece.length >= segmentOffset + segment.length ? null : (
+            <>
+              <span className="endpoint-path-separator">.</span>
+              <wbr />
+            </>
+          )}
+        </span>,
+      );
+      pieceOffset += piece.length + 1;
+    }
+
+    nodes.push(<span key={`segment-${segmentOffset}`}>{segmentNodes}</span>);
+    segmentOffset += segment.length;
+    if (segmentOffset < path.length) {
+      nodes.push(
+        <span key={`slash-${segmentOffset}`}>
+          <span className="endpoint-path-separator">/</span>
+          <wbr />
+        </span>,
+      );
+      segmentOffset += 1;
+    }
+  }
+
+  return nodes;
+}
+
+async function copyTextToClipboard(text: string) {
+  try {
+    if (!navigator.clipboard?.writeText) {
+      throw new Error("Clipboard API unavailable");
+    }
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.top = "0";
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    try {
+      return document.execCommand("copy");
+    } finally {
+      document.body.removeChild(textarea);
+    }
+  }
+}
+
+function ErrorToastCopyButton({ message }: { message: string }) {
+  const [copied, setCopied] = useState(false);
+  const resetTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
+    };
+  }, []);
+
+  const handleClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    void copyTextToClipboard(message)
+      .then((success) => {
+        if (!success) {
+          sonnerToast.error("复制失败，请手动复制错误信息");
+          return;
+        }
+        setCopied(true);
+        if (resetTimerRef.current) window.clearTimeout(resetTimerRef.current);
+        resetTimerRef.current = window.setTimeout(() => setCopied(false), 1400);
+      })
+      .catch(() => sonnerToast.error("复制失败，请手动复制错误信息"));
+  };
+
+  return (
+    <button
+      aria-label={copied ? "错误信息已复制" : "复制错误信息"}
+      className="toast-copy-button"
+      data-copied={copied ? "true" : undefined}
+      onClick={handleClick}
+      type="button"
+    >
+      <Copy aria-hidden="true" className="toast-copy-icon copy" size={14} strokeWidth={1.9} />
+      <Check aria-hidden="true" className="toast-copy-icon check" size={14} strokeWidth={2.15} />
+    </button>
+  );
+}
+
 function normalizeStore(store: Store) {
   store.aiSettings = { ...defaultAiSettings, ...(store.aiSettings ?? {}) };
   store.uiSettings = { ...defaultUiSettings, ...(store.uiSettings ?? {}) };
   if (!appThemes.has(store.uiSettings.theme)) store.uiSettings.theme = defaultUiSettings.theme;
   store.aiSettings.apiKeys = { ...(store.aiSettings.apiKeys ?? {}) };
+  const customPresets = (store.aiSettings.cliPresets ?? []).filter(
+    (preset) => !defaultCliPresets.some((defaultPreset) => defaultPreset.id === preset.id),
+  );
+  store.aiSettings.cliPresets = [
+    ...defaultCliPresets.map((defaultPreset) => ({
+      ...defaultPreset,
+      ...(store.aiSettings?.cliPresets ?? []).find((preset) => preset.id === defaultPreset.id),
+    })),
+    ...customPresets,
+  ];
+  if (!store.aiSettings.cliPresetId) {
+    store.aiSettings.cliPresetId = localAiProviders.has(store.aiSettings.provider)
+      ? store.aiSettings.provider === "custom-cli"
+        ? defaultAiSettings.cliPresetId
+        : store.aiSettings.provider
+      : defaultAiSettings.cliPresetId;
+  }
+  if (localAiProviders.has(store.aiSettings.provider) && store.aiSettings.model.trim()) {
+    store.aiSettings.cliPresets = store.aiSettings.cliPresets.map((preset) =>
+      preset.id === store.aiSettings?.cliPresetId && !preset.model
+        ? { ...preset, model: store.aiSettings?.model ?? "" }
+        : preset,
+    );
+  }
   if (store.aiSettings.apiKey && !store.aiSettings.apiKeys[store.aiSettings.provider]) {
     store.aiSettings.apiKeys[store.aiSettings.provider] = store.aiSettings.apiKey;
   }
@@ -480,12 +636,15 @@ export function App() {
   const [curlFetchResponse, setCurlFetchResponse] = useState(false);
   const [importingCurl, setImportingCurl] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<"appearance" | "ai">("appearance");
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
   const [aiApiKeyVisible, setAiApiKeyVisible] = useState(false);
   const [aiDialogMode, setAiDialogMode] = useState<"single" | "multiple" | null>(null);
   const [aiInstruction, setAiInstruction] = useState("");
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiPreview, setAiPreview] = useState<AiPreview | null>(null);
+  const [aiPreviewTab, setAiPreviewTab] = useState("case-0");
+  const [aiPreviewEditingIndex, setAiPreviewEditingIndex] = useState<number | null>(null);
+  const [aiPreviewEditingName, setAiPreviewEditingName] = useState("");
   const [aiProgress, setAiProgress] = useState<AiProgress | null>(null);
   const bodyPersistTimer = useRef<number | null>(null);
   const caseTabsRef = useRef<HTMLDivElement | null>(null);
@@ -493,8 +652,13 @@ export function App() {
   const pendingThemeRef = useRef<AppTheme | null>(null);
 
   const showToast = useCallback((message: string, error = false) => {
-    if (error) sonnerToast.error(message);
-    else sonnerToast.success(message);
+    if (error) {
+      sonnerToast.error(message, {
+        action: <ErrorToastCopyButton message={message} />,
+      });
+    } else {
+      sonnerToast.success(message);
+    }
   }, []);
 
   const receiveState = useCallback(
@@ -521,7 +685,10 @@ export function App() {
       if (payload.importedEndpointId || payload.error) setImportingCurl(false);
       if (payload.aiProgress) setAiProgress(payload.aiProgress);
       if (payload.aiPreview || payload.error) setAiGenerating(false);
-      if (payload.aiPreview) setAiPreview(payload.aiPreview);
+      if (payload.aiPreview) {
+        setAiPreview(payload.aiPreview);
+        setAiPreviewTab("case-0");
+      }
       if (payload.importedEndpointId) {
         setImportOpen(false);
         setCurlText("");
@@ -612,7 +779,9 @@ export function App() {
   const uiSettings = store?.uiSettings ?? defaultUiSettings;
   const currentTheme = uiSettings.theme;
   const aiEnabled = aiSettings.enabled === true;
-  const aiApiKeyCount = parseApiKeys(aiSettings.apiKey).length;
+  const aiApiKeyCount = localAiProviders.has(aiSettings.provider)
+    ? 0
+    : parseApiKeys(aiSettings.apiKey).length;
 
   useEffect(() => {
     document.documentElement.dataset.appTheme = currentTheme;
@@ -1259,17 +1428,18 @@ export function App() {
 
   const addCase = () => {
     if (!endpoint) return;
-    const base = mockCase;
     const nextCase: MockCase = {
       id: createId(),
       name: "新返回场景",
-      body: base?.body || "{\n  \n}",
-      status: base?.status || 200,
-      headers: base?.headers || "",
+      body: "",
+      status: 200,
+      headers: "",
     };
     mutateStore((draft) => {
       const item = draft.endpoints.find((candidate) => candidate.id === endpoint.id);
-      item?.cases.push(nextCase);
+      if (!item) return;
+      item.cases.push(nextCase);
+      item.activeCaseId = nextCase.id;
     });
     setSelectedCaseId(nextCase.id);
   };
@@ -1363,6 +1533,11 @@ export function App() {
       const current = { ...defaultAiSettings, ...(draft.aiSettings ?? {}) };
       const currentProvider = current.provider;
       const nextProvider = patch.provider ?? current.provider;
+      const nextCliPresetId =
+        patch.cliPresetId ??
+        (patch.provider && localAiProviders.has(nextProvider)
+          ? (current.cliPresetId ?? defaultAiSettings.cliPresetId)
+          : current.cliPresetId);
       const apiKeys = {
         ...(current.apiKeys ?? {}),
         [currentProvider]: patch.apiKey ?? current.apiKey,
@@ -1374,13 +1549,16 @@ export function App() {
         apiKeys,
         apiKey: typeof patch.apiKey === "string" ? patch.apiKey : (apiKeys[nextProvider] ?? ""),
         provider: nextProvider,
+        cliPresetId: nextCliPresetId,
         model:
           patch.provider && patch.provider !== current.provider
             ? nextProvider === "gemini"
               ? "gemini-2.5-flash"
               : nextProvider === "openai"
                 ? "gpt-4.1-mini"
-                : ""
+                : localAiProviders.has(nextProvider)
+                  ? ""
+                  : ""
             : (patch.model ?? current.model),
       };
       draft.aiSettings.apiKeys = { ...apiKeys, [draft.aiSettings.provider]: draft.aiSettings.apiKey };
@@ -1398,9 +1576,34 @@ export function App() {
     });
   };
 
-  const openSettings = (section: "appearance" | "ai" = "appearance") => {
+  useEffect(() => {
+    if (!aiPreview || aiDialogMode !== "multiple") return;
+    const match = /^case-(\d+)$/.exec(aiPreviewTab);
+    const activeIndex = match ? Number(match[1]) : -1;
+    if (activeIndex < 0 || activeIndex >= aiPreview.cases.length) {
+      setAiPreviewTab("case-0");
+    }
+  }, [aiDialogMode, aiPreview, aiPreviewTab]);
+
+  const openSettings = (section: SettingsSection = "appearance") => {
     setSettingsSection(section);
     setSettingsOpen(true);
+  };
+
+  const installCli = () => {
+    send("installCli");
+  };
+
+  const copyCliText = (text: string) => {
+    void copyTextToClipboard(text)
+      .then((success) => {
+        if (!success) {
+          showToast("复制失败，请手动复制命令。", true);
+          return;
+        }
+        showToast("已复制到剪贴板。");
+      })
+      .catch(() => showToast("复制失败，请手动复制命令。", true));
   };
 
   const openAiDialog = (mode: "single" | "multiple") => {
@@ -1412,6 +1615,8 @@ export function App() {
     setAiDialogMode(mode);
     setAiInstruction("");
     setAiPreview(null);
+    setAiPreviewTab("case-0");
+    setAiPreviewEditingIndex(null);
     setAiProgress(null);
   };
 
@@ -1420,6 +1625,8 @@ export function App() {
     const currentBody = currentBodyDraft;
     setAiGenerating(true);
     setAiPreview(null);
+    setAiPreviewTab("case-0");
+    setAiPreviewEditingIndex(null);
     setAiProgress({ stage: "starting", message: "AI 生成已开始，正在准备上下文..." });
     send("generateAiMock", {
       aiRequest: {
@@ -1473,13 +1680,69 @@ export function App() {
     setSelectedCaseId(nextCaseId);
     setAiDialogMode(null);
     setAiPreview(null);
+    setAiPreviewTab("case-0");
+    setAiPreviewEditingIndex(null);
     setAiProgress(null);
     showToast("已应用 AI 生成结果。");
+  };
+
+  const updateAiPreviewCaseBody = (index: number, body: string) => {
+    setAiPreview((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        cases: current.cases.map((item, itemIndex) => (itemIndex === index ? { ...item, body } : item)),
+      };
+    });
+  };
+
+  const updateAiPreviewCaseName = (index: number, name: string) => {
+    setAiPreview((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        cases: current.cases.map((item, itemIndex) => (itemIndex === index ? { ...item, name } : item)),
+      };
+    });
+  };
+
+  const startRenameAiPreviewCase = (index: number) => {
+    const item = aiPreviewCases[index];
+    if (!item) return;
+    setAiPreviewTab(`case-${index}`);
+    setAiPreviewEditingIndex(index);
+    setAiPreviewEditingName(item.name || `场景 ${index + 1}`);
+  };
+
+  const commitRenameAiPreviewCase = () => {
+    if (aiPreviewEditingIndex === null) return;
+    updateAiPreviewCaseName(aiPreviewEditingIndex, aiPreviewEditingName.trim() || "未命名场景");
+    setAiPreviewEditingIndex(null);
+    setAiPreviewEditingName("");
+  };
+
+  const cancelRenameAiPreviewCase = () => {
+    setAiPreviewEditingIndex(null);
+    setAiPreviewEditingName("");
+  };
+
+  const deleteAiPreviewCase = (index: number) => {
+    if (!aiPreview || aiPreview.cases.length <= 1) return;
+    const nextCases = aiPreview.cases.filter((_, itemIndex) => itemIndex !== index);
+    const nextIndex = Math.min(index, nextCases.length - 1);
+    setAiPreview({ ...aiPreview, cases: nextCases });
+    setAiPreviewTab(`case-${nextIndex}`);
+    if (aiPreviewEditingIndex === index) cancelRenameAiPreviewCase();
   };
 
   if (!store) {
     return <div className="grid h-screen place-items-center text-[13px] text-muted">正在载入...</div>;
   }
+
+  const aiPreviewCases =
+    aiPreview && aiDialogMode === "single" ? aiPreview.cases.slice(0, 1) : (aiPreview?.cases ?? []);
+  const activeAiPreviewIndex = Math.max(0, Number(aiPreviewTab.replace("case-", "")) || 0);
+  const activeAiPreviewCase = aiPreviewCases[activeAiPreviewIndex] ?? aiPreviewCases[0] ?? null;
 
   return (
     <TooltipProvider>
@@ -1597,8 +1860,8 @@ export function App() {
                               />
                             ) : (
                               <div className="group block min-w-0 max-w-full">
-                                <div className="flex min-w-0 max-w-full items-baseline p-0 text-left text-[21px] font-[720] text-[var(--text)]">
-                                  <span className="min-w-0 flex-1 truncate">
+                                <div className="inline-flex min-w-0 max-w-full items-baseline p-0 text-left text-[21px] font-[720] text-[var(--text)]">
+                                  <span className="min-w-0 max-w-[calc(100%-25px)] truncate">
                                     {endpoint.name || "未命名接口"}
                                   </span>
                                   <Button
@@ -1654,10 +1917,10 @@ export function App() {
                               Chrome Overrides 路径
                             </span>
                             <div
-                              className="min-h-[30px] select-text whitespace-normal py-1.5 text-xs leading-[18px] text-[color-mix(in_srgb,var(--muted)_88%,var(--text))] [overflow-wrap:anywhere]"
+                              className="endpoint-path-text min-h-[30px] select-text whitespace-normal py-1.5 text-xs leading-[18px] text-[color-mix(in_srgb,var(--muted)_88%,var(--text))]"
                               aria-label="Override 路径"
                             >
-                              {endpoint.overridePath}
+                              {renderReadablePath(endpoint.overridePath)}
                             </div>
                           </div>
                           <div className="inline-flex items-center gap-1">
@@ -1782,7 +2045,7 @@ export function App() {
                                   })}
                                 </TabsList>
                                 <Button
-                                  className="size-[30px] min-h-[30px] flex-none origin-center rounded-[9px] border-[color-mix(in_srgb,var(--border)_74%,transparent)] bg-[color-mix(in_srgb,var(--panel)_86%,var(--panel-2))] shadow-[var(--control-shadow)] hover:border-[color-mix(in_srgb,var(--accent)_32%,var(--border))] hover:bg-[color-mix(in_srgb,var(--accent-soft)_40%,var(--panel))] active:scale-95"
+                                  className="size-7 min-h-7 flex-none self-start origin-center rounded-[8px] border-[color-mix(in_srgb,var(--border)_74%,transparent)] bg-[color-mix(in_srgb,var(--panel)_86%,var(--panel-2))] shadow-[var(--control-shadow)] hover:border-[color-mix(in_srgb,var(--accent)_32%,var(--border))] hover:bg-[color-mix(in_srgb,var(--accent-soft)_40%,var(--panel))] active:scale-95 [&_svg]:size-4"
                                   size="icon-sm"
                                   variant="outline"
                                   type="button"
@@ -1897,6 +2160,8 @@ export function App() {
           section={settingsSection}
           theme={currentTheme}
           onApiKeyVisibleChange={setAiApiKeyVisible}
+          onCopyText={copyCliText}
+          onInstallCli={installCli}
           onOpenChange={setSettingsOpen}
           onSectionChange={setSettingsSection}
           onThemeChange={(theme: AppTheme) => updateUiSettings({ theme })}
@@ -1909,15 +2174,33 @@ export function App() {
             if (!open) {
               setAiDialogMode(null);
               setAiPreview(null);
+              setAiPreviewTab("case-0");
+              setAiPreviewEditingIndex(null);
               setAiProgress(null);
             }
           }}
         >
           <DialogContent
             className={cn(
-              "isolate grid max-h-[min(720px,calc(100vh-64px))] w-[min(680px,calc(100vw-56px))] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-[color-mix(in_srgb,var(--panel)_98%,white)]",
+              "isolate grid max-h-[min(840px,calc(100vh-48px))] w-[min(1120px,calc(100vw-56px))] max-w-none grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-[color-mix(in_srgb,var(--panel)_98%,white)] sm:max-w-[min(1120px,calc(100vw-56px))]",
               aiGenerating && "is-streaming",
             )}
+            onKeyDown={(event) => {
+              if (event.defaultPrevented) return;
+              if (
+                event.key !== "Enter" ||
+                (!event.metaKey && !event.ctrlKey) ||
+                event.nativeEvent.isComposing
+              ) {
+                return;
+              }
+              event.preventDefault();
+              if (aiPreview) {
+                applyAiPreview();
+                return;
+              }
+              if (!aiGenerating) generateAiMock();
+            }}
             onInteractOutside={(event) => event.preventDefault()}
           >
             {aiDialogMode ? (
@@ -1941,42 +2224,165 @@ export function App() {
                     }
                     value={aiInstruction}
                     onChange={(event) => setAiInstruction(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) return;
+                      event.preventDefault();
+                      if (!aiGenerating) generateAiMock();
+                    }}
                   />
-                  {aiGenerating ? (
+                  {!aiPreview ? (
                     <output
-                      className="grid max-h-[360px] min-h-[220px] overflow-hidden rounded-[10px] border border-[color-mix(in_srgb,var(--border)_86%,transparent)] bg-[#fbfbfc]"
+                      className="grid max-h-[min(620px,66vh)] min-h-[420px] overflow-hidden rounded-[10px] border border-[color-mix(in_srgb,var(--border)_86%,transparent)] bg-[#fbfbfc]"
                       aria-live="polite"
                     >
                       <div className="flex min-h-[34px] items-center justify-between gap-3 border-b border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel-2)_34%,white)] px-[11px] py-[7px] text-xs font-[620] text-[var(--text)]">
                         <span>AI 实时返回</span>
                         <span className="truncate font-[520] text-[var(--muted)]">
-                          {aiProgress?.message ?? "正在等待 AI 返回..."}
+                          {aiGenerating
+                            ? (aiProgress?.message ?? "正在等待 AI 返回...")
+                            : "生成后会在这里预览。"}
                         </span>
                       </div>
-                      <pre className="m-0 max-h-[326px] min-h-[184px] overflow-auto bg-transparent px-[11px] py-2.5 font-mono text-xs leading-[19px] whitespace-pre-wrap break-words text-[#24292f] [overflow-wrap:anywhere]">
-                        {aiProgress?.content || "正在建立流式响应..."}
-                      </pre>
+                      <div className="ai-code-preview h-[min(586px,60vh)] min-h-[386px]">
+                        <ResponseBodyEditor
+                          ariaLabel="AI 实时返回内容"
+                          value={
+                            aiProgress?.content || (aiGenerating ? "正在建立流式响应..." : "等待生成结果...")
+                          }
+                          wrapLines
+                          readOnly
+                          onChange={() => {}}
+                          onBlur={() => {}}
+                        />
+                      </div>
                     </output>
                   ) : null}
                   {aiPreview ? (
-                    <div className="scroll-mask-y-direct-4 grid max-h-[430px] min-h-0 gap-2.5 overflow-auto">
-                      {aiPreview.cases.map((item, index) => (
+                    aiDialogMode === "multiple" ? (
+                      <Tabs
+                        className="grid max-h-[min(620px,66vh)] min-h-[360px] grid-rows-[auto_minmax(0,1fr)] overflow-hidden"
+                        value={aiPreviewTab}
+                        onValueChange={setAiPreviewTab}
+                      >
+                        <TabsList
+                          className="scroll-mask-x-4 flex min-w-0 max-w-full flex-nowrap justify-start gap-[5px] overflow-auto rounded-none bg-transparent p-0 pb-[5px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                          variant="line"
+                        >
+                          {aiPreviewCases.map((item, index) => (
+                            <div
+                              className="case-tab"
+                              data-active={aiPreviewTab === `case-${index}` ? "true" : undefined}
+                              data-editing={aiPreviewEditingIndex === index ? "true" : undefined}
+                              key={`${item.name}-${index}-tab`}
+                            >
+                              {aiPreviewEditingIndex === index ? (
+                                <Input
+                                  autoFocus
+                                  className="case-name-inline"
+                                  style={
+                                    {
+                                      "--case-name-length": aiPreviewEditingName.length,
+                                    } as CSSProperties
+                                  }
+                                  value={aiPreviewEditingName}
+                                  onBlur={commitRenameAiPreviewCase}
+                                  onChange={(event) => setAiPreviewEditingName(event.target.value)}
+                                  onFocus={(event) => event.currentTarget.select()}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter") commitRenameAiPreviewCase();
+                                    if (event.key === "Escape") cancelRenameAiPreviewCase();
+                                  }}
+                                />
+                              ) : (
+                                <TabsTrigger
+                                  className="case-tab-main"
+                                  value={`case-${index}`}
+                                  onDoubleClick={(event) => {
+                                    event.preventDefault();
+                                    startRenameAiPreviewCase(index);
+                                  }}
+                                >
+                                  {aiPreviewTab === `case-${index}` ? (
+                                    <span className="case-current-dot" aria-hidden="true" />
+                                  ) : null}
+                                  <span className="case-tab-label">{item.name || `场景 ${index + 1}`}</span>
+                                </TabsTrigger>
+                              )}
+                              {aiPreviewEditingIndex !== index && aiPreviewCases.length > 1 ? (
+                                <Button
+                                  aria-label={`删除生成场景 ${item.name || `场景 ${index + 1}`}`}
+                                  className="case-tab-delete"
+                                  size="icon-xs"
+                                  type="button"
+                                  variant="ghost"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    deleteAiPreviewCase(index);
+                                  }}
+                                >
+                                  <X size={11} />
+                                </Button>
+                              ) : null}
+                            </div>
+                          ))}
+                        </TabsList>
+                        {activeAiPreviewCase ? (
+                          <div
+                            className="min-h-0 overflow-hidden rounded-[11px] border border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel-2)_46%,white)]"
+                            key={`active-ai-preview-${activeAiPreviewIndex}`}
+                          >
+                            <div className="border-b border-[var(--border-soft)] px-[11px] py-[9px]">
+                              <div className="text-[13px] font-[680]">
+                                {activeAiPreviewCase.name || `场景 ${activeAiPreviewIndex + 1}`}
+                              </div>
+                              {activeAiPreviewCase.description ? (
+                                <div className="pt-0.5 text-xs text-[var(--muted)]">
+                                  {activeAiPreviewCase.description}
+                                </div>
+                              ) : null}
+                            </div>
+                            <div className="ai-code-preview h-[min(520px,56vh)]">
+                              <ResponseBodyEditor
+                                key={`ai-preview-editor-${aiPreviewTab}`}
+                                ariaLabel={`${
+                                  activeAiPreviewCase.name || `场景 ${activeAiPreviewIndex + 1}`
+                                } 返回内容`}
+                                value={activeAiPreviewCase.body}
+                                wrapLines
+                                onChange={(body) => updateAiPreviewCaseBody(activeAiPreviewIndex, body)}
+                                onBlur={() => {}}
+                                onModEnter={applyAiPreview}
+                              />
+                            </div>
+                          </div>
+                        ) : null}
+                      </Tabs>
+                    ) : (
+                      aiPreviewCases.map((item, index) => (
                         <div
-                          className="overflow-hidden rounded-[11px] border border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel-2)_46%,white)]"
+                          className="min-h-0 overflow-hidden rounded-[11px] border border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel-2)_46%,white)]"
                           key={`${item.name}-${index}`}
                         >
-                          <div className="px-[11px] pt-[9px] text-[13px] font-[680]">{item.name}</div>
-                          {item.description ? (
-                            <div className="px-[11px] pt-0.5 text-xs text-[var(--muted)]">
-                              {item.description}
-                            </div>
-                          ) : null}
-                          <pre className="mb-0 mt-2 max-h-[320px] overflow-auto whitespace-pre-wrap break-words border-t border-[var(--border-soft)] bg-[#fbfbfc] px-3 py-2.5 font-mono text-xs leading-[19px] text-[#24292f] [overflow-wrap:anywhere]">
-                            {item.body}
-                          </pre>
+                          <div className="border-b border-[var(--border-soft)] px-[11px] py-[9px]">
+                            <div className="text-[13px] font-[680]">{item.name || "AI 生成结果"}</div>
+                            {item.description ? (
+                              <div className="pt-0.5 text-xs text-[var(--muted)]">{item.description}</div>
+                            ) : null}
+                          </div>
+                          <div className="ai-code-preview h-[min(520px,56vh)] min-h-[320px]">
+                            <ResponseBodyEditor
+                              key="ai-preview-editor-single"
+                              ariaLabel={`${item.name || "AI 生成结果"} 返回内容`}
+                              value={item.body}
+                              wrapLines
+                              onChange={(body) => updateAiPreviewCaseBody(index, body)}
+                              onBlur={() => {}}
+                              onModEnter={applyAiPreview}
+                            />
+                          </div>
                         </div>
-                      ))}
-                    </div>
+                      ))
+                    )
                   ) : null}
                 </div>
                 <DialogFooter>
@@ -1987,6 +2393,8 @@ export function App() {
                     onClick={() => {
                       setAiDialogMode(null);
                       setAiPreview(null);
+                      setAiPreviewTab("case-0");
+                      setAiPreviewEditingIndex(null);
                       setAiProgress(null);
                     }}
                   >
@@ -2095,7 +2503,7 @@ export function App() {
           </DialogContent>
         </Dialog>
 
-        <Toaster closeButton duration={2800} position="bottom-right" richColors />
+        <Toaster duration={2800} position="bottom-right" richColors />
       </div>
     </TooltipProvider>
   );

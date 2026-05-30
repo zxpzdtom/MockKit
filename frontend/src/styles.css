@@ -972,6 +972,34 @@ select {
   align-items: center;
   justify-content: center;
 }
+.endpoint-row-checkbox {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--text));
+  background: color-mix(in srgb, var(--panel) 96%, white);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--panel) 72%, transparent),
+    0 1px 3px rgba(15, 23, 42, 0.16);
+  transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease, color 120ms ease;
+}
+.row.active .endpoint-row-checkbox {
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--text));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--panel) 78%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--accent) 10%, transparent),
+    0 1px 4px rgba(15, 23, 42, 0.18);
+}
+.row.selected .endpoint-row-checkbox,
+.endpoint-row-checkbox[data-state="checked"],
+.endpoint-row-checkbox[data-checked] {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--primary-foreground);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent),
+    0 1px 4px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.row.active .endpoint-row-checkbox[data-state="checked"],
+.row.active .endpoint-row-checkbox[data-checked] {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--panel) 78%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--accent) 18%, transparent),
+    0 1px 5px color-mix(in srgb, var(--accent) 34%, transparent);
+}
 .row-title {
   grid-column: 1;
   grid-row: 1;
@@ -991,6 +1019,14 @@ select {
   color: var(--muted);
   font-size: 12px;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.endpoint-path-text {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+.endpoint-path-token,
+.endpoint-path-separator {
   white-space: nowrap;
 }
 label {
@@ -1252,6 +1288,143 @@ label span {
 .code-editor .cm-content ::selection {
   background: color-mix(in srgb, var(--accent) 24%, transparent) !important;
 }
+.curl-code-editor {
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fbfbfc;
+  box-shadow: var(--control-shadow);
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.curl-code-editor:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent), var(--control-shadow);
+}
+.curl-code-editor > *,
+.curl-code-editor .cm-theme {
+  height: 100%;
+}
+.curl-code-editor .cm-editor {
+  height: 100%;
+  background: #fbfbfc !important;
+  color: var(--text);
+  font: 12px / 19px ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+}
+.curl-code-editor .cm-focused {
+  outline: none;
+}
+.curl-code-editor .cm-scroller {
+  overflow: auto;
+  background: #fbfbfc;
+  font-family: inherit;
+}
+.curl-code-editor .cm-content {
+  min-height: 100%;
+  padding: 12px 0 18px;
+  background: #fbfbfc;
+  caret-color: var(--text);
+}
+.curl-code-editor .cm-line {
+  padding: 0 12px;
+}
+.curl-code-editor .cm-gutters {
+  border-right: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--panel-2) 42%, white);
+  color: var(--faint);
+}
+.curl-code-editor .cm-lineNumbers .cm-gutterElement {
+  min-width: 38px;
+  padding: 0 8px 0 7px;
+  font-size: 11px;
+  line-height: 19px;
+}
+.curl-code-editor .cm-activeLine,
+.curl-code-editor .cm-activeLineGutter {
+  background: color-mix(in srgb, var(--accent-soft) 22%, transparent);
+}
+.curl-code-editor .cm-placeholder {
+  color: var(--faint);
+}
+.curl-code-editor .cm-selectionBackground,
+.curl-code-editor .cm-content ::selection {
+  background: color-mix(in srgb, var(--accent) 24%, transparent) !important;
+}
+.ai-code-preview {
+  min-height: 0;
+  overflow: hidden;
+  background: #fbfbfc;
+}
+.ai-code-preview > *,
+.ai-code-preview .cm-theme {
+  height: 100%;
+}
+.ai-code-preview .cm-editor {
+  height: 100%;
+  background: #fbfbfc !important;
+  color: #24292f;
+  font: 12px / 19px ui-monospace, "SF Mono", Menlo, Monaco, Consolas, monospace;
+}
+.ai-code-preview .cm-focused {
+  outline: none;
+}
+.ai-code-preview .cm-scroller {
+  overflow: auto;
+  background: #fbfbfc;
+  font-family: inherit;
+}
+.ai-code-preview .cm-content {
+  min-height: 100%;
+  padding: 10px 0 18px;
+  background: #fbfbfc;
+}
+.ai-code-preview .cm-line {
+  padding: 0 11px;
+}
+.ai-code-preview .cm-gutters {
+  border-right: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--panel-2) 42%, white);
+  color: var(--faint);
+}
+.ai-code-preview .cm-foldGutter .cm-gutterElement {
+  display: grid;
+  min-width: 22px;
+  place-items: center;
+  padding: 0 2px;
+  color: transparent;
+  line-height: 19px;
+  transition: color 120ms ease, opacity 120ms ease, transform 120ms ease;
+}
+.ai-code-preview .cm-foldGutter .cm-gutterElement:hover {
+  color: color-mix(in srgb, var(--accent) 44%, var(--text));
+}
+.ai-code-preview .cm-foldGutter .cm-gutterElement:not(:empty) {
+  opacity: 0.58;
+}
+.ai-code-preview .cm-foldGutter:hover .cm-gutterElement:not(:empty) {
+  color: color-mix(in srgb, var(--muted) 72%, transparent);
+}
+.ai-code-preview .cm-foldPlaceholder {
+  margin: 0 2px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border-soft));
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent-soft) 34%, var(--panel));
+  color: var(--muted);
+}
+.ai-code-preview .cm-lineNumbers .cm-gutterElement {
+  min-width: 38px;
+  padding: 0 8px 0 7px;
+  font-size: 11px;
+  line-height: 19px;
+}
+.ai-code-preview .cm-activeLine,
+.ai-code-preview .cm-activeLineGutter {
+  background: transparent;
+}
+.ai-code-preview .cm-selectionBackground,
+.ai-code-preview .cm-content ::selection {
+  background: color-mix(in srgb, var(--accent) 24%, transparent) !important;
+}
 .fullscreen-code-editor {
   min-height: 0;
   height: 100%;
@@ -1341,25 +1514,66 @@ textarea:focus {
   font-weight: 500;
   line-height: 28px;
 }
-.toaster[data-sonner-toaster][dir="ltr"] {
-  --toast-close-button-start: unset;
-  --toast-close-button-end: 10px;
-  --toast-close-button-transform: translateY(-50%);
-}
 .toaster [data-sonner-toast][data-styled="true"] {
-  padding-right: 42px;
+  padding: 18px;
 }
-.toaster [data-sonner-toast][data-styled="true"] [data-close-button] {
-  top: 50%;
-  width: 22px;
-  height: 22px;
-  border-color: color-mix(in srgb, currentColor 18%, transparent);
-  background: color-mix(in srgb, white 66%, transparent);
-  opacity: 0.82;
+.toast-copy-button {
+  position: absolute;
+  top: 14px;
+  right: 54px;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, white 54%, transparent);
+  color: currentColor;
+  opacity: 0.8;
+  transition-property: background-color, border-color, box-shadow, color, opacity, transform;
+  transition-duration: 120ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
-.toaster [data-sonner-toast][data-styled="true"] [data-close-button]:hover {
-  background: color-mix(in srgb, white 84%, transparent);
+.toast-copy-button:hover {
+  background: color-mix(in srgb, white 76%, transparent);
   opacity: 1;
+}
+.toast-copy-button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, currentColor 18%, transparent);
+  opacity: 1;
+}
+.toast-copy-button:active {
+  transform: scale(0.96);
+}
+.toast-copy-button[data-copied="true"] {
+  border-color: color-mix(in srgb, #12b76a 38%, transparent);
+  background: color-mix(in srgb, #12b76a 14%, white 34%);
+  color: #067647;
+  opacity: 1;
+}
+.toast-copy-icon {
+  grid-area: 1 / 1;
+  transition-property: opacity, transform, filter;
+  transition-duration: 140ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+.toast-copy-icon.check {
+  opacity: 0;
+  transform: scale(0.25);
+  filter: blur(4px);
+}
+.toast-copy-button[data-copied="true"] .toast-copy-icon.copy {
+  opacity: 0;
+  transform: scale(0.25);
+  filter: blur(4px);
+}
+.toast-copy-button[data-copied="true"] .toast-copy-icon.check {
+  opacity: 1;
+  transform: scale(1);
+  filter: blur(0);
 }
 @layer base {
   .theme {
