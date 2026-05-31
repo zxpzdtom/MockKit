@@ -4,6 +4,7 @@
   "private": true,
   "packageManager": "pnpm@10.24.0",
   "scripts": {
+    "mac:dev": "./scripts/dev-app.sh",
     "mac:build": "./scripts/build-app.sh",
     "mac:build:release": "./scripts/build-app.sh release",
     "mac:open": "open dist/MockKit.app"

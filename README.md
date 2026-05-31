@@ -31,8 +31,13 @@ That manifest is used to avoid deleting unmanaged files in the Overrides folder.
 
 ```bash
 pnpm install
-swift run
+pnpm mac:dev
 ```
+
+`pnpm mac:dev` starts Vite at `http://127.0.0.1:5173` and launches the
+macOS shell with `MOCKKIT_FRONTEND_DEV_SERVER` set, so frontend changes update
+through Vite HMR without rebuilding the app bundle. Swift or Rust changes still
+need the relevant process to be rebuilt or restarted.
 
 ## CLI
 

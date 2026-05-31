@@ -1083,7 +1083,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
 
-        if let indexURL = resourceURL(named: "index", extension: "html") {
+        if let devServerURL = frontendDevServerURL() {
+            webView.load(URLRequest(url: devServerURL))
+        } else if let indexURL = resourceURL(named: "index", extension: "html") {
             webView.loadFileURL(indexURL, allowingReadAccessTo: indexURL.deletingLastPathComponent())
         }
     }
@@ -1214,6 +1216,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         NSLog("WebView provisional navigation failed: \(error.localizedDescription)")
+    }
+
+    private func frontendDevServerURL() -> URL? {
+        let environment = ProcessInfo.processInfo.environment
+        if let rawURL = environment["MOCKKIT_FRONTEND_DEV_SERVER"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !rawURL.isEmpty {
+            return URL(string: rawURL)
+        }
+
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let optionIndex = arguments.firstIndex(of: "--frontend-dev-server"),
+              arguments.indices.contains(arguments.index(after: optionIndex)) else {
+            return nil
+        }
+
+        let rawURL = arguments[arguments.index(after: optionIndex)].trimmingCharacters(in: .whitespacesAndNewlines)
+        return rawURL.isEmpty ? nil : URL(string: rawURL)
     }
 
     private func resourceURL(named name: String, extension fileExtension: String) -> URL? {
