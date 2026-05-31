@@ -622,6 +622,39 @@ textarea {
   gap: 8px;
   padding: 3px 4px 2px;
 }
+.workspace-switch-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.workspace-switch-hint {
+  position: relative;
+  display: inline-grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--warning) 78%, var(--muted));
+  outline: none;
+  cursor: help;
+  transition: background-color 120ms ease, box-shadow 120ms ease, color 120ms ease, transform 120ms ease;
+}
+.workspace-switch-hint::before {
+  position: absolute;
+  inset: -9px;
+  content: "";
+}
+.workspace-switch-hint:hover,
+.workspace-switch-hint:focus-visible {
+  color: color-mix(in srgb, var(--warning) 88%, var(--text));
+  background: color-mix(in srgb, var(--warning) 11%, transparent);
+}
+.workspace-switch-hint:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 26%, transparent);
+}
+.workspace-switch-hint:active {
+  transform: scale(0.96);
+}
 .source-add-button {
   display: grid;
   width: 22px;
@@ -1218,7 +1251,40 @@ textarea {
 }
 .source-node {
   display: grid;
+  gap: 0;
+}
+.source-children {
+  display: grid;
+  grid-template-rows: 0fr;
+  min-width: 0;
+  margin-top: 0;
+  overflow: hidden;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-2px);
+  pointer-events: none;
+  transition:
+    grid-template-rows 210ms cubic-bezier(0.2, 0, 0, 1), opacity 150ms ease,
+    margin-top 210ms cubic-bezier(0.2, 0, 0, 1), transform 210ms cubic-bezier(0.2, 0, 0, 1),
+    visibility 0s linear 210ms;
+}
+.source-children.expanded {
+  grid-template-rows: 1fr;
+  margin-top: 2px;
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  pointer-events: auto;
+  transition:
+    visibility 0s, grid-template-rows 230ms cubic-bezier(0.2, 0, 0, 1), opacity 160ms ease 35ms,
+    margin-top 230ms cubic-bezier(0.2, 0, 0, 1), transform 230ms cubic-bezier(0.2, 0, 0, 1);
+}
+.source-children-inner {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
   gap: 2px;
+  overflow: hidden;
 }
 .source-line {
   position: relative;
@@ -1320,6 +1386,8 @@ textarea {
   color: var(--muted);
 }
 .source-disclosure {
+  --source-disclosure-rotation: 0deg;
+
   position: absolute;
   top: 0;
   left: calc(5px + var(--tree-indent, 0px));
@@ -1334,17 +1402,21 @@ textarea {
   color: var(--muted);
   background: transparent;
   box-shadow: none;
+  transform: rotate(var(--source-disclosure-rotation));
+  transition: color 120ms ease, background-color 120ms ease, transform 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+.source-disclosure.expanded {
+  --source-disclosure-rotation: 90deg;
 }
 .source-disclosure:not(.empty):hover {
   color: var(--text);
   background: transparent;
   box-shadow: none;
-  transform: none;
 }
 .source-disclosure:not(.empty):active {
   background: transparent;
   box-shadow: none;
-  transform: none;
+  transform: rotate(var(--source-disclosure-rotation)) scale(0.96);
 }
 .source-disclosure:focus-visible {
   background: transparent;
@@ -2301,20 +2373,35 @@ textarea:focus {
   line-height: 28px;
 }
 .toaster [data-sonner-toast][data-styled="true"] {
-  padding: 18px;
+  min-height: 44px;
+  gap: 8px;
+  padding: 11px 14px;
+  border-radius: 12px;
+  box-shadow: 0 14px 36px rgba(22, 20, 18, 0.12), 0 2px 8px rgba(22, 20, 18, 0.06);
+}
+.toaster [data-sonner-toast][data-styled="true"] [data-title] {
+  line-height: 1.35;
+}
+.toaster [data-sonner-toast][data-styled="true"] [data-icon] {
+  margin-inline-end: 6px;
+}
+.toaster [data-sonner-toast][data-styled="true"]:has(.toast-copy-button) [data-content] {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 .toast-copy-button {
-  position: absolute;
-  top: 14px;
-  right: 54px;
+  position: relative;
+  flex: 0 0 28px;
+  align-self: center;
+  margin-left: auto;
   display: grid;
-  width: 32px;
-  height: 32px;
-  min-width: 32px;
-  min-height: 32px;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
   place-items: center;
   border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
-  border-radius: 10px;
+  border-radius: 8px;
   background: color-mix(in srgb, white 54%, transparent);
   color: currentColor;
   opacity: 0.8;

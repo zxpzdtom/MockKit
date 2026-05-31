@@ -10,6 +10,15 @@ import { XIcon } from "lucide-react";
 const dialogCloseButtonClass =
   "size-8 rounded-lg border border-transparent bg-transparent text-[var(--muted)] shadow-none transition-[background-color,border-color,box-shadow,color,transform] duration-150 hover:border-[var(--border-soft)] hover:bg-[color-mix(in_srgb,var(--panel-3)_64%,transparent)] hover:text-[var(--text)] hover:shadow-none focus-visible:border-[color-mix(in_srgb,var(--accent)_36%,var(--border))] focus-visible:ring-3 focus-visible:ring-[color-mix(in_srgb,var(--accent)_14%,transparent)] active:translate-y-px";
 
+function isToastGuardEvent(event: Event) {
+  const eventWithDetail = event as Event & { detail?: { originalEvent?: Event } };
+  const target = eventWithDetail.detail?.originalEvent?.target ?? event.target;
+  return (
+    target instanceof Element &&
+    Boolean(target.closest("[data-mockkit-toast-guard], .mockkit-error-toast"))
+  );
+}
+
 function Dialog({ ...props }: React.ComponentProps<typeof DialogPrimitive.Root>) {
   return <DialogPrimitive.Root data-slot="dialog" {...props} />;
 }
@@ -42,6 +51,7 @@ function DialogOverlay({ className, ...props }: React.ComponentProps<typeof Dial
 function DialogContent({
   className,
   children,
+  onInteractOutside,
   showCloseButton = true,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
@@ -56,6 +66,12 @@ function DialogContent({
           "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl border border-[var(--border-soft)] bg-[var(--panel)] p-6 text-sm text-[var(--text)] shadow-[var(--elevated-shadow)] duration-100 outline-none sm:max-w-lg data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className,
         )}
+        onInteractOutside={(event) => {
+          if (isToastGuardEvent(event)) {
+            event.preventDefault();
+          }
+          onInteractOutside?.(event);
+        }}
         {...props}
       >
         {children}

@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip } from "@/components/ui/tooltip";
-import { FolderOpen, List, ListTree, Plus, Sparkles } from "lucide-react";
+import { CircleAlert, FolderOpen, List, ListTree, Plus, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
 import { send } from "../lib/native";
 import { cn } from "../lib/utils";
@@ -45,7 +45,24 @@ export function AppSidebar({
         <div className={panelLabelClass}>LOCAL OVERRIDES</div>
         <div className="mt-[7px] flex min-h-7 items-center justify-between gap-2.5">
           <div className="text-sm font-[680]">工作区</div>
-          <Switch aria-label="全局 Mock" checked={mockEnabled} onCheckedChange={onMockEnabledChange} />
+          <div className="workspace-switch-cluster">
+            <Tooltip
+              content="仅当 Chrome 已开启 Local Overrides，且当前页面打开了开发者面板时，这个开关才会生效。"
+              side="bottom"
+              align="end"
+              sideOffset={7}
+            >
+              <span
+                aria-label="全局 Mock 生效条件"
+                className="workspace-switch-hint"
+                role="img"
+                tabIndex={0}
+              >
+                <CircleAlert size={14} strokeWidth={1.9} />
+              </span>
+            </Tooltip>
+            <Switch aria-label="全局 Mock" checked={mockEnabled} onCheckedChange={onMockEnabledChange} />
+          </div>
         </div>
         <div className="mt-[3px] grid grid-cols-[minmax(0,1fr)_28px] items-center gap-[7px]">
           <div className="truncate text-xs text-[var(--muted)]">{overridesFolder}</div>

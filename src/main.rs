@@ -2196,7 +2196,7 @@ fn import_curl(
     fetch_response: bool,
 ) -> Result<(String, String), Box<dyn std::error::Error>> {
     let parsed = parse_curl(curl)?;
-    let mut response_body = SUCCESS_TEMPLATE_BODY.to_string();
+    let mut response_body = String::new();
     let mut response_status = 200;
     let mut response_headers = String::new();
 
@@ -2228,7 +2228,7 @@ fn import_curl(
     let override_path = unique_override_path(store, &base_override_path);
     let endpoint = Endpoint {
         id: new_id(),
-        name: display_name(&override_path),
+        name: display_url_without_scheme(&parsed.url),
         method: parsed.method,
         override_path,
         group_path: None,
@@ -2247,6 +2247,29 @@ fn import_curl(
     let endpoint_id = endpoint.id.clone();
     store.endpoints.insert(0, endpoint);
     Ok((endpoint_id, default_case_id))
+}
+
+fn display_url_without_scheme(url: &Url) -> String {
+    let Some(host) = url.host_str() else {
+        return url.as_str().to_string();
+    };
+
+    let mut value = host.to_string();
+    if let Some(port) = url.port() {
+        value.push(':');
+        value.push_str(&port.to_string());
+    }
+    let path = url.path();
+    if path.is_empty() {
+        value.push('/');
+    } else {
+        value.push_str(path);
+    }
+    if let Some(query) = url.query() {
+        value.push('?');
+        value.push_str(query);
+    }
+    value
 }
 
 fn unique_case_name(endpoint: &Endpoint, base_name: &str) -> String {
@@ -3138,7 +3161,10 @@ fn run_custom_cli_preset(
 
     let mode = infer_cli_stream_mode(&command_text, &preset.stream_mode);
     let mut command = Command::new("/bin/sh");
-    command.arg("-lc").arg(command_text);
+    command
+        .arg("-lc")
+        .arg(command_text)
+        .env("PATH", resolve_user_path());
     let output = run_prompt_command_streaming(
         command,
         if writes_prompt_to_stdin { prompt } else { "" },
@@ -4586,6 +4612,32 @@ mod tests {
         assert_eq!(endpoint.active_case_id.as_deref(), Some(case_id.as_str()));
         assert_eq!(endpoint.cases.len(), 1);
         assert_eq!(endpoint.cases[0].name, "Default");
+    }
+
+    #[test]
+    fn import_curl_uses_url_as_new_endpoint_name() {
+        let mut store = default_store("");
+        import_curl(
+            &mut store,
+            "curl 'https://message-api.ele.me/invoke/?method=MessageV2Service.pollingNotify'",
+            false,
+        )
+        .expect("curl should import");
+
+        assert_eq!(
+            store.endpoints[0].name,
+            "message-api.ele.me/invoke/?method=MessageV2Service.pollingNotify"
+        );
+    }
+
+    #[test]
+    fn import_curl_does_not_request_when_fetch_response_is_false() {
+        let mut store = default_store("");
+        import_curl(&mut store, "curl 'http://127.0.0.1:9/api/users'", false)
+            .expect("curl import should not perform the request");
+
+        assert_eq!(store.endpoints.len(), 1);
+        assert_eq!(store.endpoints[0].cases[0].body, "");
     }
 
     #[test]

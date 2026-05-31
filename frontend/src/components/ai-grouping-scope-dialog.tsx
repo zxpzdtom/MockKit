@@ -415,13 +415,17 @@ export function AiGroupingScopeDialog({
 
   const selectedEndpoints = endpoints.filter((item) => checkedIds.has(item.id));
   const handleOpenChange = (nextOpen: boolean) => {
-    if (generating && !nextOpen) return;
     onOpenChange(nextOpen);
   };
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="grid max-h-[min(760px,calc(100vh-48px))] w-[min(760px,calc(100vw-56px))] max-w-none grid-rows-[auto_auto_minmax(0,1fr)_auto] overflow-hidden bg-[color-mix(in_srgb,var(--panel)_98%,white)] sm:max-w-[min(760px,calc(100vw-56px))]">
+      <DialogContent
+        className="grid max-h-[min(760px,calc(100vh-48px))] w-[min(760px,calc(100vw-56px))] max-w-none grid-rows-[auto_auto_minmax(0,1fr)_auto] overflow-hidden bg-[color-mix(in_srgb,var(--panel)_98%,white)] sm:max-w-[min(760px,calc(100vw-56px))]"
+        onInteractOutside={(event) => {
+          if (generating) event.preventDefault();
+        }}
+      >
         <DialogHeader className="pr-10">
           <DialogTitle>选择 AI 分组范围</DialogTitle>
           <DialogDescription>
@@ -500,8 +504,8 @@ export function AiGroupingScopeDialog({
             <Sparkles size={13} />
             已选择 {selectedEndpoints.length} 个接口
           </div>
-          <Button variant="secondary" type="button" disabled={generating} onClick={() => onOpenChange(false)}>
-            取消
+          <Button variant="secondary" type="button" onClick={() => onOpenChange(false)}>
+            {generating ? "取消生成" : "取消"}
           </Button>
           <Button
             type="button"

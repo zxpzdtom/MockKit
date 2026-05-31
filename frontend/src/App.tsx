@@ -38,7 +38,6 @@ import type { FileContents } from "@pierre/diffs/react";
 import {
   Braces,
   Check,
-  ChevronDown,
   ChevronRight,
   Copy,
   FileJson,
@@ -278,6 +277,7 @@ function ErrorToastCopyButton({ message }: { message: string }) {
       aria-label={copied ? "错误信息已复制" : "复制错误信息"}
       className="toast-copy-button"
       data-copied={copied ? "true" : undefined}
+      data-mockkit-toast-guard=""
       onClick={handleClick}
       type="button"
     >
@@ -285,6 +285,10 @@ function ErrorToastCopyButton({ message }: { message: string }) {
       <Check aria-hidden="true" className="toast-copy-icon check" size={14} strokeWidth={2.15} />
     </button>
   );
+}
+
+function ErrorToastMessage({ message }: { message: string }) {
+  return <span data-mockkit-toast-guard="">{message}</span>;
 }
 
 function normalizeStore(store: Store) {
@@ -811,13 +815,15 @@ export function App() {
   const [aiGroupingPreviewEndpoints, setAiGroupingPreviewEndpoints] = useState<Endpoint[]>([]);
   const bodyPersistTimer = useRef<number | null>(null);
   const caseTabsRef = useRef<HTMLDivElement | null>(null);
+  const aiGroupingRequestIdRef = useRef<string | null>(null);
   const storeRef = useRef<Store | null>(null);
   const pendingThemeRef = useRef<AppTheme | null>(null);
 
   const showToast = useCallback((message: string, error = false) => {
     if (error) {
-      sonnerToast.error(message, {
+      sonnerToast.error(<ErrorToastMessage message={message} />, {
         action: <ErrorToastCopyButton message={message} />,
+        className: "mockkit-error-toast",
       });
     } else {
       sonnerToast.success(message);
@@ -826,6 +832,9 @@ export function App() {
 
   const receiveState = useCallback(
     (payload: NativePayload) => {
+      const aiGroupingRequestId = payload.aiGroupingRequestId || null;
+      const ignoreAiGroupingPayload =
+        Boolean(aiGroupingRequestId) && aiGroupingRequestId !== aiGroupingRequestIdRef.current;
       if (payload.store) {
         const nextStore = normalizeStore(payload.store);
         const pendingTheme = pendingThemeRef.current;
@@ -864,24 +873,31 @@ export function App() {
           return next;
         });
       }
-      if (payload.aiGroupingPreview || payload.error) setAiGroupingGenerating(false);
+      if ((payload.aiGroupingPreview || (payload.error && aiGroupingRequestId)) && !ignoreAiGroupingPayload) {
+        setAiGroupingGenerating(false);
+        if (aiGroupingRequestId === aiGroupingRequestIdRef.current) {
+          aiGroupingRequestIdRef.current = null;
+        }
+      } else if (payload.error && !aiGroupingRequestId) {
+        setAiGroupingGenerating(false);
+      }
       if (payload.aiPreview) {
         setAiPreview(payload.aiPreview);
         setAiPreviewTab("case-0");
       }
       if (payload.aiMetadataPreview) setAiMetadataPreview(payload.aiMetadataPreview);
-      if (payload.aiGroupingPreview) {
+      if (payload.aiGroupingPreview && !ignoreAiGroupingPayload) {
         setAiGroupingScopeOpen(false);
         setAiGroupingPreview(payload.aiGroupingPreview);
       }
-      if (payload.error) setAiGroupingPreviewEndpoints([]);
+      if (payload.error && !ignoreAiGroupingPayload) setAiGroupingPreviewEndpoints([]);
       if (payload.importedEndpointId) {
         setImportOpen(false);
         setCurlText("");
         setCurlFetchResponse(false);
       }
-      if (payload.message) showToast(payload.message);
-      if (payload.error) showToast(payload.error, true);
+      if (payload.message && !ignoreAiGroupingPayload) showToast(payload.message);
+      if (payload.error && !ignoreAiGroupingPayload) showToast(payload.error, true);
     },
     [showToast],
   );
@@ -1840,13 +1856,16 @@ export function App() {
   };
 
   const importCurl = () => {
+    if (importingCurl) return;
     const curl = curlText.trim();
     if (!curl) {
       showToast("先粘贴一段 cURL。", true);
       return;
     }
     setImportingCurl(true);
-    send("importCurl", { curl, fetchResponse: curlFetchResponse });
+    window.requestAnimationFrame(() => {
+      send("importCurl", { curl, fetchResponse: curlFetchResponse === true });
+    });
   };
 
   const updateAiSettings = (patch: Partial<AiSettings>) => {
@@ -1955,6 +1974,18 @@ export function App() {
     setAiGroupingScopeOpen(true);
   };
 
+  const closeAiGroupingScope = (open: boolean) => {
+    if (!open && aiGroupingGenerating) {
+      const aiGroupingRequestId = aiGroupingRequestIdRef.current;
+      send("cancelAiGrouping", aiGroupingRequestId ? { aiGroupingRequestId } : {});
+      aiGroupingRequestIdRef.current = null;
+      setAiGroupingGenerating(false);
+      setAiGroupingPreviewEndpoints([]);
+      setAiProgress(null);
+    }
+    setAiGroupingScopeOpen(open);
+  };
+
   const generateAiMetadata = () => {
     if (!endpoint || !mockCase) return;
     if (!aiEnabled) {
@@ -2006,11 +2037,14 @@ export function App() {
         : ungroupedEndpoints.length > 0
           ? "为所有接口建议分组；已有分组可作为上下文，合理的已有分组应尽量沿用。"
           : "所有接口都已有业务分组，请检查是否存在明显不合理的归类；合理的已有分组应尽量沿用。";
+    const aiGroupingRequestId = createId();
+    aiGroupingRequestIdRef.current = aiGroupingRequestId;
     setAiGroupingGenerating(true);
     setAiGroupingPreview(null);
     setAiGroupingPreviewEndpoints(targetEndpoints);
     setAiProgress({ stage: "starting", message: "AI 正在分析接口目录..." });
     send("generateAiGrouping", {
+      aiGroupingRequestId,
       aiGroupingRequest: {
         instruction: [
           (aiSettings.aiGroupingPrompt?.trim() || defaultAiGroupingPrompt).trim(),
@@ -2515,7 +2549,7 @@ export function App() {
                                             <span className="case-tab-label">{scenario.name}</span>
                                           </TabsTrigger>
                                         )}
-                                        {!isEditingCase && endpoint.cases.length > 1 ? (
+                                        {!isEditingCase ? (
                                           <Button
                                             aria-label={`删除返回场景 ${scenario.name}`}
                                             className="case-tab-delete"
@@ -2635,7 +2669,7 @@ export function App() {
           open={aiGroupingScopeOpen}
           selectedEndpointIds={selectedEndpointIds}
           onGenerate={generateAiGrouping}
-          onOpenChange={setAiGroupingScopeOpen}
+          onOpenChange={closeAiGroupingScope}
         />
 
         <AiGroupingDialog
@@ -3167,7 +3201,7 @@ function DirectoryNode({
       >
         <Button
           aria-label={expanded ? "收起目录" : "展开目录"}
-          className={cn("source-disclosure", !hasChildren && "empty")}
+          className={cn("source-disclosure", expanded && "expanded", !hasChildren && "empty")}
           disabled={!hasChildren}
           onClick={(event) => {
             event.stopPropagation();
@@ -3177,7 +3211,7 @@ function DirectoryNode({
           type="button"
           variant="ghost"
         >
-          {hasChildren ? expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} /> : null}
+          {hasChildren ? <ChevronRight size={12} /> : null}
         </Button>
         <ContextMenu>
           <ContextMenuTrigger className="source-context-trigger">
@@ -3265,29 +3299,34 @@ function DirectoryNode({
           size="sm"
         />
       </div>
-      {expanded &&
-        node.children.map((child) => (
-          <DirectoryNode
-            endpoints={endpoints}
-            dragOverPath={dragOverPath}
-            expandedPaths={expandedPaths}
-            focusedNodeId={focusedNodeId}
-            key={child.id}
-            node={child}
-            overridesFolder={overridesFolder}
-            selectedDirectoryPath={selectedDirectoryPath}
-            selectedEndpointId={selectedEndpointId}
-            onDragOverPath={onDragOverPath}
-            onMoveDirectory={onMoveDirectory}
-            onRequestDeleteDirectory={onRequestDeleteDirectory}
-            onRequestDeleteEndpoint={onRequestDeleteEndpoint}
-            onSelect={onSelect}
-            onSelectEndpoint={onSelectEndpoint}
-            onSetEnabled={onSetEnabled}
-            onSetEndpointEnabled={onSetEndpointEnabled}
-            onToggle={onToggle}
-          />
-        ))}
+      {hasChildren ? (
+        <div aria-hidden={!expanded} className={cn("source-children", expanded && "expanded")}>
+          <div className="source-children-inner">
+            {node.children.map((child) => (
+              <DirectoryNode
+                endpoints={endpoints}
+                dragOverPath={dragOverPath}
+                expandedPaths={expandedPaths}
+                focusedNodeId={focusedNodeId}
+                key={child.id}
+                node={child}
+                overridesFolder={overridesFolder}
+                selectedDirectoryPath={selectedDirectoryPath}
+                selectedEndpointId={selectedEndpointId}
+                onDragOverPath={onDragOverPath}
+                onMoveDirectory={onMoveDirectory}
+                onRequestDeleteDirectory={onRequestDeleteDirectory}
+                onRequestDeleteEndpoint={onRequestDeleteEndpoint}
+                onSelect={onSelect}
+                onSelectEndpoint={onSelectEndpoint}
+                onSetEnabled={onSetEnabled}
+                onSetEndpointEnabled={onSetEndpointEnabled}
+                onToggle={onToggle}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

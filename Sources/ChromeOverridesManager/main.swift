@@ -236,6 +236,38 @@ final class AiProgressLineParser: @unchecked Sendable {
     }
 }
 
+final class CancellationToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private weak var process: Process?
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func setProcess(_ process: Process) {
+        lock.lock()
+        self.process = process
+        let shouldTerminate = cancelled
+        lock.unlock()
+        if shouldTerminate, process.isRunning {
+            process.terminate()
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let process = process
+        lock.unlock()
+        if process?.isRunning == true {
+            process?.terminate()
+        }
+    }
+}
+
 final class RustCoreClient {
     private let encoder: JSONEncoder
     private let decoder = JSONDecoder()
@@ -310,15 +342,21 @@ final class RustCoreClient {
         store: Store,
         storePath: URL,
         aiRequest: AiGroupingRequestPayload,
-        progress: ProgressHandler? = nil
+        progress: ProgressHandler? = nil,
+        cancellation: CancellationToken? = nil
     ) throws -> CoreResponse {
         try run(
             CoreRequest(command: "generateAiGrouping", storePath: storePath.path, store: store, aiGroupingRequest: aiRequest),
-            progress: progress
+            progress: progress,
+            cancellation: cancellation
         )
     }
 
-    private func run(_ request: CoreRequest, progress: ProgressHandler? = nil) throws -> CoreResponse {
+    private func run(
+        _ request: CoreRequest,
+        progress: ProgressHandler? = nil,
+        cancellation: CancellationToken? = nil
+    ) throws -> CoreResponse {
         let requestURL = FileManager.default
             .temporaryDirectory
             .appendingPathComponent("mockkit-core-\(UUID().uuidString).json")
@@ -344,6 +382,7 @@ final class RustCoreClient {
         let error = Pipe()
         process.standardOutput = output
         process.standardError = error
+        cancellation?.setProcess(process)
         if let progress {
             let parser = AiProgressLineParser()
             error.fileHandleForReading.readabilityHandler = { handle in
@@ -354,7 +393,13 @@ final class RustCoreClient {
                 }
             }
         }
+        defer {
+            error.fileHandleForReading.readabilityHandler = nil
+        }
 
+        if cancellation?.isCancelled == true {
+            throw NSError(domain: appName, code: 125, userInfo: [NSLocalizedDescriptionKey: "AI 分组已取消。"])
+        }
         try process.run()
         let timeout: TimeInterval
         switch request.command {
@@ -369,14 +414,25 @@ final class RustCoreClient {
         }
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning && Date() < deadline {
+            if cancellation?.isCancelled == true {
+                process.terminate()
+                process.waitUntilExit()
+                throw NSError(domain: appName, code: 125, userInfo: [NSLocalizedDescriptionKey: "AI 分组已取消。"])
+            }
             Thread.sleep(forTimeInterval: 0.02)
+        }
+        if cancellation?.isCancelled == true {
+            if process.isRunning {
+                process.terminate()
+                process.waitUntilExit()
+            }
+            throw NSError(domain: appName, code: 125, userInfo: [NSLocalizedDescriptionKey: "AI 分组已取消。"])
         }
         if process.isRunning {
             process.terminate()
             throw NSError(domain: appName, code: 124, userInfo: [NSLocalizedDescriptionKey: "Rust core 执行超时：\(request.command)。"])
         }
         process.waitUntilExit()
-        error.fileHandleForReading.readabilityHandler = nil
 
         let outputData = output.fileHandleForReading.readDataToEndOfFile()
         let errorData = error.fileHandleForReading.readDataToEndOfFile()
@@ -519,9 +575,16 @@ final class StoreController {
     func generateAiGrouping(
         store: Store,
         aiRequest: AiGroupingRequestPayload,
-        progress: RustCoreClient.ProgressHandler? = nil
+        progress: RustCoreClient.ProgressHandler? = nil,
+        cancellation: CancellationToken? = nil
     ) throws -> CoreResponse {
-        try core.generateAiGrouping(store: store, storePath: storeURL, aiRequest: aiRequest, progress: progress)
+        try core.generateAiGrouping(
+            store: store,
+            storePath: storeURL,
+            aiRequest: aiRequest,
+            progress: progress,
+            cancellation: cancellation
+        )
     }
 
     func revealOverridesFolder(store: Store, relativePath: String? = nil) {
@@ -573,11 +636,14 @@ final class StoreController {
 
 final class Bridge: NSObject, WKScriptMessageHandler {
     private let storeController = StoreController()
+    private let importQueue = DispatchQueue(label: "mockkit.import-curl", qos: .userInitiated)
     private let aiQueue = DispatchQueue(label: "mockkit.ai.generate", qos: .userInitiated)
     private weak var webView: WKWebView?
     private var store: Store
     private var isSavingStore = false
     private var pendingStorePayload: Any?
+    private var aiGroupingCancellation: CancellationToken?
+    private var aiGroupingRequestId: String?
 
     override init() {
         store = storeController.load()
@@ -631,7 +697,7 @@ final class Bridge: NSObject, WKScriptMessageHandler {
             case "importCurl":
                 let curl = payload["curl"] as? String ?? ""
                 let fetchResponse = payload["fetchResponse"] as? Bool ?? false
-                try importCurl(curl, fetchResponse: fetchResponse)
+                startImportCurl(curl, fetchResponse: fetchResponse)
             case "generateAiMock":
                 let request = payload["aiRequest"] as? [String: Any] ?? [:]
                 try startGenerateAiMock(request)
@@ -640,7 +706,9 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                 try startGenerateAiMetadata(request)
             case "generateAiGrouping":
                 let request = payload["aiGroupingRequest"] as? [String: Any] ?? [:]
-                try startGenerateAiGrouping(request)
+                try startGenerateAiGrouping(request, requestId: payload["aiGroupingRequestId"] as? String)
+            case "cancelAiGrouping":
+                cancelAiGrouping(requestId: payload["aiGroupingRequestId"] as? String)
             case "installCli":
                 let result = try installMockKitCli()
                 let directory = URL(fileURLWithPath: result.path).deletingLastPathComponent().path
@@ -759,10 +827,14 @@ final class Bridge: NSObject, WKScriptMessageHandler {
         }
     }
 
-    private func startGenerateAiGrouping(_ rawRequest: [String: Any]) throws {
+    private func startGenerateAiGrouping(_ rawRequest: [String: Any], requestId: String?) throws {
         let data = try JSONSerialization.data(withJSONObject: rawRequest)
         let aiRequest = try JSONDecoder().decode(AiGroupingRequestPayload.self, from: data)
         let storeSnapshot = store
+        aiGroupingCancellation?.cancel()
+        let cancellation = CancellationToken()
+        aiGroupingCancellation = cancellation
+        aiGroupingRequestId = requestId
         sendAiProgress(stage: "starting", message: "AI 自动分组已开始，正在建立流式连接...")
         aiQueue.async { [weak self] in
             guard let self else { return }
@@ -773,18 +845,28 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                     aiRequest: aiRequest,
                     progress: { [weak self] payload in
                         DispatchQueue.main.async {
-                            self?.sendAiProgress(payload)
+                            if !cancellation.isCancelled {
+                                self?.sendAiProgress(payload)
+                            }
                         }
-                    }
+                    },
+                    cancellation: cancellation
                 )
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
+                    if self.aiGroupingRequestId == requestId {
+                        self.aiGroupingCancellation = nil
+                        self.aiGroupingRequestId = nil
+                    }
                     if let nextStore = result.store {
                         self.store = nextStore
                     }
                     var extra: [String: Any] = [:]
                     if let preview = result.aiGroupingPreview {
                         extra["aiGroupingPreview"] = self.dictionary(from: preview)
+                    }
+                    if let requestId {
+                        extra["aiGroupingRequestId"] = requestId
                     }
                     extra["aiProgress"] = [
                         "stage": "complete",
@@ -794,18 +876,32 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                 }
             } catch {
                 DispatchQueue.main.async { [weak self] in
+                    if self?.aiGroupingRequestId == requestId {
+                        self?.aiGroupingCancellation = nil
+                        self?.aiGroupingRequestId = nil
+                    }
                     self?.sendState(
                         error: error.localizedDescription,
                         extra: [
                             "aiProgress": [
                                 "stage": "error",
                                 "message": error.localizedDescription
-                            ]
+                            ],
+                            "aiGroupingRequestId": requestId ?? ""
                         ]
                     )
                 }
             }
         }
+    }
+
+    private func cancelAiGrouping(requestId: String?) {
+        if let requestId, let currentRequestId = aiGroupingRequestId, requestId != currentRequestId {
+            return
+        }
+        aiGroupingCancellation?.cancel()
+        aiGroupingCancellation = nil
+        aiGroupingRequestId = nil
     }
 
     private func sendAiProgress(stage: String, message: String) {
@@ -816,18 +912,36 @@ final class Bridge: NSObject, WKScriptMessageHandler {
         sendState(extra: ["aiProgress": dictionary(from: progress)])
     }
 
-    private func importCurl(_ curl: String, fetchResponse: Bool) throws {
-        var nextStore = store
-        let result = try storeController.importCurl(store: &nextStore, curl: curl, fetchResponse: fetchResponse)
-        store = nextStore
-        let suffix = fetchResponse ? "，已保存响应场景。" : "。"
-        sendState(
-            message: "已导入 cURL\(suffix)",
-            extra: [
-                "importedEndpointId": result.importedEndpointId ?? "",
-                "importedCaseId": result.importedCaseId ?? ""
-            ]
-        )
+    private func startImportCurl(_ curl: String, fetchResponse: Bool) {
+        let storeSnapshot = store
+        importQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let backgroundStoreController = StoreController()
+                var nextStore = storeSnapshot
+                let result = try backgroundStoreController.importCurl(
+                    store: &nextStore,
+                    curl: curl,
+                    fetchResponse: fetchResponse
+                )
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.store = nextStore
+                    let suffix = fetchResponse ? "，已保存响应场景。" : "。"
+                    self.sendState(
+                        message: "已导入 cURL\(suffix)",
+                        extra: [
+                            "importedEndpointId": result.importedEndpointId ?? "",
+                            "importedCaseId": result.importedCaseId ?? ""
+                        ]
+                    )
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.sendState(error: error.localizedDescription)
+                }
+            }
+        }
     }
 
     private func saveStore(_ rawStore: Any?) throws {

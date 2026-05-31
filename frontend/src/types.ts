@@ -102,6 +102,7 @@ export interface NativePayload {
   aiMetadataPreview?: AiMetadataPreview;
   aiMetadataEndpointId?: string;
   aiGroupingPreview?: AiGroupingPreview;
+  aiGroupingRequestId?: string;
   aiProgress?: AiProgress;
 }
 
@@ -114,6 +115,7 @@ export interface NativeMessage {
   aiRequest?: AiRequest;
   aiMetadataRequest?: AiMetadataRequest;
   aiGroupingRequest?: AiGroupingRequest;
+  aiGroupingRequestId?: string;
 }
 
 export interface AiRequest {
