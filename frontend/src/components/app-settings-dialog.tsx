@@ -177,6 +177,54 @@ const cliCommands = [
     example: 'mockkit use "example.com/api/users" "成功" --publish',
   },
   {
+    command: "mockkit edit <endpoint> [options]",
+    description: "修改接口标题、说明、路径、方法、分组或标签。",
+    params: [
+      { name: "<endpoint>", description: "list 里显示的短 ID、接口名称或路径片段" },
+      { name: "--name <text>", description: "设置接口标题" },
+      { name: "--description <text>", description: "设置接口说明" },
+      { name: "--publish", description: "保存后立刻发布" },
+    ],
+    example: 'mockkit edit "example.com/api/users" --name "用户列表" --description "分页返回用户。"',
+  },
+  {
+    command: "mockkit case add <endpoint> [options]",
+    description: "给接口新增一个返回场景，默认会切换为当前场景。",
+    params: [
+      { name: "<endpoint>", description: "list 里显示的短 ID、接口名称或路径片段" },
+      { name: "--name <text>", description: "场景名称" },
+      { name: "--body-file <path>", description: "从文件读取响应 body" },
+      { name: "--no-activate", description: "新增后不切换当前场景" },
+      { name: "--publish", description: "保存后立刻发布" },
+    ],
+    example:
+      'mockkit case add "example.com/api/users" --name "空列表" --body-file ./empty-users.json --publish',
+  },
+  {
+    command: "mockkit case update <endpoint> <case> [options]",
+    description: "修改某个返回场景的名称、响应 body、状态码或响应头。",
+    params: [
+      { name: "<endpoint>", description: "list 里显示的短 ID、接口名称或路径片段" },
+      { name: "<case>", description: "场景名称或 ID" },
+      { name: "--body <text>", description: "直接设置响应 body" },
+      { name: "--body-file <path>", description: "从文件读取响应 body" },
+      { name: "--body-stdin", description: "从 stdin 读取响应 body" },
+      { name: "--activate", description: "修改后切换为当前场景" },
+      { name: "--publish", description: "保存后立刻发布" },
+    ],
+    example: 'mockkit case update "example.com/api/users" "成功" --body-file ./users.json --publish',
+  },
+  {
+    command: "mockkit case delete <endpoint> <case> [--publish]",
+    description: "删除某个返回场景；每个接口至少会保留一个场景。",
+    params: [
+      { name: "<endpoint>", description: "list 里显示的短 ID、接口名称或路径片段" },
+      { name: "<case>", description: "场景名称或 ID" },
+      { name: "--publish", description: "删除后立刻发布" },
+    ],
+    example: 'mockkit case delete "example.com/api/users" "失败" --publish',
+  },
+  {
     command: "mockkit disable <endpoint...> [--publish]",
     description: "禁用一个或多个接口；不带参数的 mockkit disable 会关闭全部 Mock。",
     params: [
@@ -214,6 +262,7 @@ function inferCliStreamMode(command: string): AiCliPreset["streamMode"] {
 }
 
 interface AppSettingsDialogProps {
+  aiGroupingDefaultPrompt: string;
   aiApiKeyCount: number;
   aiApiKeyVisible: boolean;
   aiEnabled: boolean;
@@ -231,6 +280,7 @@ interface AppSettingsDialogProps {
 }
 
 export function AppSettingsDialog({
+  aiGroupingDefaultPrompt,
   aiApiKeyCount,
   aiApiKeyVisible,
   aiEnabled,
@@ -247,6 +297,9 @@ export function AppSettingsDialog({
   theme,
 }: AppSettingsDialogProps) {
   const localCliProvider = localCliProviders.has(aiSettings.provider);
+  const aiGroupingPrompt = aiSettings.aiGroupingPrompt?.trim()
+    ? aiSettings.aiGroupingPrompt
+    : aiGroupingDefaultPrompt;
   const cliPresets = aiSettings.cliPresets ?? [];
   const activeCliPreset =
     cliPresets.find((preset) => preset.id === aiSettings.cliPresetId) ??
@@ -766,6 +819,35 @@ export function AppSettingsDialog({
                     </div>
                   </label>
                 )}
+              </div>
+              <div className={cn(settingsPanelClass, "grid gap-3")}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[13px] font-[660] text-[var(--text)]">AI 分组 Prompt</div>
+                    <div className="mt-0.5 text-xs leading-5 text-[var(--muted)]">
+                      用于控制业务分组的命名和归类偏好。
+                    </div>
+                  </div>
+                  <Button
+                    size="sm"
+                    type="button"
+                    variant="secondary"
+                    disabled={aiGroupingPrompt === aiGroupingDefaultPrompt}
+                    onClick={() => onUpdateSettings({ aiGroupingPrompt: aiGroupingDefaultPrompt })}
+                  >
+                    恢复默认
+                  </Button>
+                </div>
+                <label className={fieldClass} htmlFor="settings-ai-grouping-prompt">
+                  <span>Prompt</span>
+                  <Textarea
+                    id="settings-ai-grouping-prompt"
+                    className={cn(textareaClass, "min-h-[150px]")}
+                    value={aiGroupingPrompt}
+                    placeholder="输入 AI 分组 Prompt"
+                    onChange={(event) => onUpdateSettings({ aiGroupingPrompt: event.target.value })}
+                  />
+                </label>
               </div>
             </section>
           )}

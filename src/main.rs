@@ -33,6 +33,8 @@ struct CoreRequest {
     curl: Option<String>,
     fetch_response: Option<bool>,
     ai_request: Option<AiMockRequest>,
+    ai_metadata_request: Option<AiMetadataRequest>,
+    ai_grouping_request: Option<AiGroupingRequest>,
 }
 
 #[derive(Debug, Serialize)]
@@ -45,6 +47,8 @@ struct CoreResponse {
     imported_endpoint_id: Option<String>,
     imported_case_id: Option<String>,
     ai_preview: Option<AiPreviewPayload>,
+    ai_metadata_preview: Option<AiMetadataPreviewPayload>,
+    ai_grouping_preview: Option<AiGroupingPreviewPayload>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,10 +76,14 @@ struct AiSettings {
     enabled: bool,
     provider: String,
     model: String,
+    #[serde(default)]
+    models: HashMap<String, String>,
     api_key: String,
     #[serde(default)]
     api_keys: HashMap<String, String>,
     base_url: String,
+    #[serde(default)]
+    ai_grouping_prompt: String,
     cli_preset_id: Option<String>,
     #[serde(default)]
     cli_presets: Vec<AiCliPreset>,
@@ -148,6 +156,77 @@ struct AiMockRequest {
     mode: String,
     instruction: String,
     endpoint: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiMetadataRequest {
+    instruction: String,
+    endpoint: AiMetadataEndpointContext,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiMetadataEndpointContext {
+    id: String,
+    name: String,
+    method: String,
+    override_path: String,
+    group_path: Option<String>,
+    description: String,
+    tags: Vec<String>,
+    active_case_name: String,
+    active_body: String,
+    cases: Vec<AiMetadataCaseContext>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiMetadataCaseContext {
+    name: String,
+    body: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiGroupingRequest {
+    instruction: String,
+    endpoints: Vec<AiGroupingEndpointContext>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiGroupingEndpointContext {
+    id: String,
+    name: String,
+    method: String,
+    override_path: String,
+    group_path: Option<String>,
+    description: String,
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiGroupingPreviewPayload {
+    groups: Vec<AiGroupingAssignment>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiGroupingAssignment {
+    endpoint_id: String,
+    group_path: String,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AiMetadataPreviewPayload {
+    #[serde(default)]
+    endpoint_id: String,
+    name: String,
+    description: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -230,6 +309,14 @@ fn should_run_cli(args: &[String]) -> bool {
             | "publish"
             | "disable"
             | "enable"
+            | "edit"
+            | "update"
+            | "case"
+            | "add-case"
+            | "update-case"
+            | "edit-case"
+            | "delete-case"
+            | "remove-case"
             | "import-curl"
             | "use"
             | "set-case"
@@ -265,6 +352,8 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                 imported_endpoint_id: None,
                 imported_case_id: None,
                 ai_preview: None,
+                ai_metadata_preview: None,
+                ai_grouping_preview: None,
             }
         }
         "save" => {
@@ -279,6 +368,8 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                 imported_endpoint_id: None,
                 imported_case_id: None,
                 ai_preview: None,
+                ai_metadata_preview: None,
+                ai_grouping_preview: None,
             }
         }
         "sync" => {
@@ -294,6 +385,8 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                 imported_endpoint_id: None,
                 imported_case_id: None,
                 ai_preview: None,
+                ai_metadata_preview: None,
+                ai_grouping_preview: None,
             }
         }
         "publish" => {
@@ -308,6 +401,8 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                 imported_endpoint_id: None,
                 imported_case_id: None,
                 ai_preview: None,
+                ai_metadata_preview: None,
+                ai_grouping_preview: None,
             }
         }
         "disable" => {
@@ -323,6 +418,8 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                 imported_endpoint_id: None,
                 imported_case_id: None,
                 ai_preview: None,
+                ai_metadata_preview: None,
+                ai_grouping_preview: None,
             }
         }
         "refreshChromeProfile" => {
@@ -338,6 +435,8 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                 imported_endpoint_id: None,
                 imported_case_id: None,
                 ai_preview: None,
+                ai_metadata_preview: None,
+                ai_grouping_preview: None,
             }
         }
         "importCurl" => {
@@ -358,6 +457,8 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                 imported_endpoint_id: Some(result.0),
                 imported_case_id: Some(result.1),
                 ai_preview: None,
+                ai_metadata_preview: None,
+                ai_grouping_preview: None,
             }
         }
         "generateAiMock" => {
@@ -373,6 +474,46 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                 imported_endpoint_id: None,
                 imported_case_id: None,
                 ai_preview: Some(preview),
+                ai_metadata_preview: None,
+                ai_grouping_preview: None,
+            }
+        }
+        "generateAiMetadata" => {
+            let mut store = require_store(request.store)?;
+            normalize_store(&mut store);
+            let ai_request = request
+                .ai_metadata_request
+                .ok_or("missing AI metadata request payload")?;
+            let preview = generate_ai_metadata(&store, ai_request)?;
+            CoreResponse {
+                store: Some(store),
+                imported: vec![],
+                updated: 0,
+                written: vec![],
+                imported_endpoint_id: None,
+                imported_case_id: None,
+                ai_preview: None,
+                ai_metadata_preview: Some(preview),
+                ai_grouping_preview: None,
+            }
+        }
+        "generateAiGrouping" => {
+            let mut store = require_store(request.store)?;
+            normalize_store(&mut store);
+            let ai_request = request
+                .ai_grouping_request
+                .ok_or("missing AI grouping request payload")?;
+            let preview = generate_ai_grouping(&store, ai_request)?;
+            CoreResponse {
+                store: Some(store),
+                imported: vec![],
+                updated: 0,
+                written: vec![],
+                imported_endpoint_id: None,
+                imported_case_id: None,
+                ai_preview: None,
+                ai_metadata_preview: None,
+                ai_grouping_preview: Some(preview),
             }
         }
         command => return Err(format!("unknown core command: {command}").into()),
@@ -411,6 +552,11 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         "publish" => cli_publish(&options),
         "disable" => cli_disable(&options, &remaining[1..]),
         "enable" => cli_set_enabled(&options, &remaining[1..], true),
+        "edit" | "update" => cli_edit_endpoint(&options, &remaining[1..]),
+        "case" => cli_case(&options, &remaining[1..]),
+        "add-case" => cli_case_add(&options, &remaining[1..]),
+        "update-case" | "edit-case" => cli_case_update(&options, &remaining[1..]),
+        "delete-case" | "remove-case" => cli_case_delete(&options, &remaining[1..]),
         "import-curl" => cli_import_curl(&options, &remaining[1..]),
         "use" | "set-case" => cli_use_case(&options, &remaining[1..]),
         _ => Err(format!("unknown CLI command: {command}. Run `mockkit help`.").into()),
@@ -559,9 +705,36 @@ Commands:
   enable <endpoint...>           Enable one or more endpoints
   enable --group <path>          Enable endpoints in a group
   enable --matching <text>       Enable matching endpoints in batch
+  edit <endpoint> [options]      Edit endpoint title, description, path, method, group, or tags
+  case add <endpoint> [options]  Add a response case and activate it by default
+  case update <endpoint> <case>  Edit a response case name, body, status, or headers
+  case delete <endpoint> <case>  Delete a response case
   import-curl [--fetch] <curl>   Import a cURL command as an endpoint
   use <endpoint> <case>          Activate a case by endpoint id/name/path and case id/name
   use <endpoint> <case> --publish
+
+Edit options:
+  --name <text>                  Set endpoint title
+  --description <text>           Set endpoint description
+  --description-file <path>      Read endpoint description from a file
+  --method <method>              Set endpoint method
+  --path <path>                  Set endpoint override path
+  --group <path>                 Set endpoint group path
+  --clear-group                  Remove endpoint group path
+  --tag <tag>                    Set tags; can be repeated
+  --tags <tag,tag>               Set comma/newline separated tags
+
+Case options:
+  --name <text>                  Set case name
+  --body <text>                  Set response body
+  --body-file <path>             Read response body from a file; use - for stdin
+  --body-stdin                   Read response body from stdin
+  --status <code>                Set response status metadata
+  --headers <text>               Set response headers metadata
+  --headers-file <path>          Read response headers from a file; use - for stdin
+  --activate                     Activate the case after update
+  --no-activate                  Keep current active case after add
+  --publish                      Publish after saving
 
 Environment:
   MOCKKIT_STORE_PATH             Override the default App Support store path
@@ -902,6 +1075,533 @@ fn cli_set_enabled(
     Ok(())
 }
 
+#[derive(Debug, Default)]
+struct CliEndpointEditOptions {
+    name: Option<String>,
+    description: Option<String>,
+    method: Option<String>,
+    override_path: Option<String>,
+    group_path: Option<Option<String>>,
+    tags: Option<Vec<String>>,
+    publish: bool,
+}
+
+fn cli_edit_endpoint(
+    options: &CliOptions,
+    args: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (endpoint_query, edit_options) = parse_endpoint_edit_args(args)?;
+    let mut store = load_cli_store(options)?;
+    let endpoint_index = find_endpoint_index(&store, &endpoint_query)?;
+    let mut changed = vec![];
+
+    if let Some(path) = edit_options.override_path.as_deref() {
+        let clean_path = sanitized_relative_path(path);
+        if clean_path.is_empty() {
+            return Err("--path cannot be empty".into());
+        }
+        if store.endpoints.iter().enumerate().any(|(index, endpoint)| {
+            index != endpoint_index && endpoint.override_path == clean_path
+        }) {
+            return Err(format!("another endpoint already uses path: {clean_path}").into());
+        }
+    }
+
+    {
+        let endpoint = &mut store.endpoints[endpoint_index];
+        if let Some(name) = edit_options.name {
+            if endpoint.name != name {
+                endpoint.name = name;
+                changed.push("name");
+            }
+        }
+        if let Some(description) = edit_options.description {
+            if endpoint.description != description {
+                endpoint.description = description;
+                changed.push("description");
+            }
+        }
+        if let Some(method) = edit_options.method {
+            let method = method.trim().to_uppercase();
+            if method.is_empty() {
+                return Err("--method cannot be empty".into());
+            }
+            if endpoint.method != method {
+                endpoint.method = method;
+                changed.push("method");
+            }
+        }
+        if let Some(path) = edit_options.override_path {
+            let clean_path = sanitized_relative_path(&path);
+            if endpoint.override_path != clean_path {
+                endpoint.override_path = clean_path;
+                changed.push("overridePath");
+            }
+        }
+        if let Some(group_path) = edit_options.group_path {
+            let next_group = group_path
+                .as_deref()
+                .map(sanitized_relative_path)
+                .filter(|path| !path.is_empty());
+            if endpoint.group_path != next_group {
+                endpoint.group_path = next_group;
+                changed.push("groupPath");
+            }
+        }
+        if let Some(tags) = edit_options.tags {
+            if endpoint.tags != tags {
+                endpoint.tags = tags;
+                changed.push("tags");
+            }
+        }
+    }
+
+    if changed.is_empty() {
+        return Err("edit requires at least one changed field".into());
+    }
+
+    if let Some(group_path) = store.endpoints[endpoint_index].group_path.clone() {
+        remember_group_path(&mut store, &group_path);
+    }
+    normalize_store(&mut store);
+    let endpoint = store.endpoints[endpoint_index].clone();
+    save_cli_store(options, &store)?;
+    let written = if edit_options.publish {
+        publish(&store)?
+    } else {
+        vec![]
+    };
+
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "endpoint": endpoint,
+                "changed": changed,
+                "published": edit_options.publish,
+                "written": written,
+            }))?
+        );
+    } else {
+        println!(
+            "Updated endpoint `{}` ({}).",
+            endpoint.name,
+            changed.join(", ")
+        );
+        if edit_options.publish {
+            println!("Published {} managed override files.", written.len());
+        }
+    }
+    Ok(())
+}
+
+fn parse_endpoint_edit_args(
+    args: &[String],
+) -> Result<(String, CliEndpointEditOptions), Box<dyn std::error::Error>> {
+    let mut positional = vec![];
+    let mut options = CliEndpointEditOptions::default();
+    let mut tags: Option<Vec<String>> = None;
+    let mut index = 0usize;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--publish" => options.publish = true,
+            "--name" | "--title" | "-n" => {
+                options.name = Some(take_cli_value(args, &mut index, "--name")?);
+            }
+            value if value.starts_with("--name=") => {
+                options.name = Some(value.trim_start_matches("--name=").to_string());
+            }
+            value if value.starts_with("--title=") => {
+                options.name = Some(value.trim_start_matches("--title=").to_string());
+            }
+            "--description" | "--desc" | "-d" => {
+                options.description = Some(take_cli_value(args, &mut index, "--description")?);
+            }
+            value if value.starts_with("--description=") => {
+                options.description = Some(value.trim_start_matches("--description=").to_string());
+            }
+            value if value.starts_with("--desc=") => {
+                options.description = Some(value.trim_start_matches("--desc=").to_string());
+            }
+            "--description-file" => {
+                let path = take_cli_value(args, &mut index, "--description-file")?;
+                options.description = Some(read_cli_text_source(&path)?);
+            }
+            value if value.starts_with("--description-file=") => {
+                options.description = Some(read_cli_text_source(
+                    value.trim_start_matches("--description-file="),
+                )?);
+            }
+            "--method" | "-X" => {
+                options.method = Some(take_cli_value(args, &mut index, "--method")?);
+            }
+            value if value.starts_with("--method=") => {
+                options.method = Some(value.trim_start_matches("--method=").to_string());
+            }
+            "--path" | "--override-path" => {
+                options.override_path = Some(take_cli_value(args, &mut index, "--path")?);
+            }
+            value if value.starts_with("--path=") => {
+                options.override_path = Some(value.trim_start_matches("--path=").to_string());
+            }
+            value if value.starts_with("--override-path=") => {
+                options.override_path =
+                    Some(value.trim_start_matches("--override-path=").to_string());
+            }
+            "--group" | "-g" => {
+                options.group_path = Some(Some(take_cli_value(args, &mut index, "--group")?));
+            }
+            value if value.starts_with("--group=") => {
+                options.group_path = Some(Some(value.trim_start_matches("--group=").to_string()));
+            }
+            "--clear-group" => options.group_path = Some(None),
+            "--clear-tags" => tags = Some(vec![]),
+            "--tag" => {
+                let value = take_cli_value(args, &mut index, "--tag")?;
+                tags.get_or_insert_with(Vec::new)
+                    .extend(split_cli_tags(&value));
+            }
+            value if value.starts_with("--tag=") => {
+                tags.get_or_insert_with(Vec::new)
+                    .extend(split_cli_tags(value.trim_start_matches("--tag=")));
+            }
+            "--tags" => {
+                let value = take_cli_value(args, &mut index, "--tags")?;
+                tags = Some(split_cli_tags(&value));
+            }
+            value if value.starts_with("--tags=") => {
+                tags = Some(split_cli_tags(value.trim_start_matches("--tags=")));
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown option: {value}").into());
+            }
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if let Some(tags) = tags {
+        options.tags = Some(unique_non_empty_values(tags));
+    }
+    let endpoint = positional
+        .first()
+        .ok_or("edit requires <endpoint>. Run `mockkit list` to find one.")?
+        .clone();
+    if positional.len() > 1 {
+        return Err("edit accepts exactly one endpoint argument".into());
+    }
+    Ok((endpoint, options))
+}
+
+#[derive(Debug, Default)]
+struct CliCaseEditOptions {
+    name: Option<String>,
+    body: Option<String>,
+    status: Option<i32>,
+    headers: Option<String>,
+    publish: bool,
+    activate: bool,
+    no_activate: bool,
+}
+
+fn cli_case(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        return Err("case requires add, update, or delete".into());
+    };
+    match subcommand {
+        "add" | "create" => cli_case_add(options, &args[1..]),
+        "update" | "edit" | "set" => cli_case_update(options, &args[1..]),
+        "delete" | "remove" | "rm" => cli_case_delete(options, &args[1..]),
+        _ => Err(format!("unknown case command: {subcommand}").into()),
+    }
+}
+
+fn cli_case_add(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let (positional, case_options) = parse_case_edit_args(args)?;
+    let endpoint_query = positional
+        .first()
+        .ok_or("case add requires <endpoint>. Run `mockkit list` to find one.")?;
+    if positional.len() > 1 {
+        return Err("case add accepts exactly one endpoint argument".into());
+    }
+
+    let mut store = load_cli_store(options)?;
+    let endpoint = find_endpoint_mut(&mut store, endpoint_query)?;
+    let case_id = new_id();
+    let case_name = case_options
+        .name
+        .unwrap_or_else(|| unique_case_name(endpoint, "新返回场景"));
+    let mock_case = MockCase {
+        id: case_id.clone(),
+        name: case_name.clone(),
+        body: case_options.body.unwrap_or_default(),
+        status: case_options.status.unwrap_or(200),
+        headers: case_options.headers.unwrap_or_default(),
+    };
+    endpoint.cases.push(mock_case.clone());
+    if !case_options.no_activate {
+        endpoint.active_case_id = Some(case_id.clone());
+    }
+    let endpoint_name = endpoint.name.clone();
+    normalize_store(&mut store);
+    save_cli_store(options, &store)?;
+    let written = if case_options.publish {
+        publish(&store)?
+    } else {
+        vec![]
+    };
+
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "endpoint": endpoint_name,
+                "case": mock_case,
+                "active": !case_options.no_activate,
+                "published": case_options.publish,
+                "written": written,
+            }))?
+        );
+    } else {
+        println!("Added case `{case_name}` for `{endpoint_name}`.");
+        if case_options.publish {
+            println!("Published {} managed override files.", written.len());
+        }
+    }
+    Ok(())
+}
+
+fn cli_case_update(
+    options: &CliOptions,
+    args: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (positional, case_options) = parse_case_edit_args(args)?;
+    if positional.len() < 2 {
+        return Err("case update requires <endpoint> and <case>".into());
+    }
+    if positional.len() > 2 {
+        return Err("case update accepts exactly <endpoint> and <case>".into());
+    }
+    if case_options.name.is_none()
+        && case_options.body.is_none()
+        && case_options.status.is_none()
+        && case_options.headers.is_none()
+        && !case_options.activate
+    {
+        return Err(
+            "case update requires --name, --body, --body-file, --status, --headers, or --activate"
+                .into(),
+        );
+    }
+
+    let mut store = load_cli_store(options)?;
+    let endpoint = find_endpoint_mut(&mut store, &positional[0])?;
+    let case_index = find_case_index(endpoint, &positional[1])?;
+    let case_id = endpoint.cases[case_index].id.clone();
+    let mut changed = vec![];
+    {
+        let mock_case = &mut endpoint.cases[case_index];
+        if let Some(name) = case_options.name {
+            if mock_case.name != name {
+                mock_case.name = name;
+                changed.push("name");
+            }
+        }
+        if let Some(body) = case_options.body {
+            if mock_case.body != body {
+                mock_case.body = body;
+                changed.push("body");
+            }
+        }
+        if let Some(status) = case_options.status {
+            if mock_case.status != status {
+                mock_case.status = status;
+                changed.push("status");
+            }
+        }
+        if let Some(headers) = case_options.headers {
+            if mock_case.headers != headers {
+                mock_case.headers = headers;
+                changed.push("headers");
+            }
+        }
+    }
+    if case_options.activate && endpoint.active_case_id.as_deref() != Some(case_id.as_str()) {
+        endpoint.active_case_id = Some(case_id.clone());
+        changed.push("activeCase");
+    }
+    if changed.is_empty() {
+        return Err("case update did not change anything".into());
+    }
+
+    let endpoint_name = endpoint.name.clone();
+    let mock_case = endpoint.cases[case_index].clone();
+    normalize_store(&mut store);
+    save_cli_store(options, &store)?;
+    let written = if case_options.publish {
+        publish(&store)?
+    } else {
+        vec![]
+    };
+
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "endpoint": endpoint_name,
+                "case": mock_case,
+                "changed": changed,
+                "published": case_options.publish,
+                "written": written,
+            }))?
+        );
+    } else {
+        println!(
+            "Updated case `{}` for `{}` ({}).",
+            mock_case.name,
+            endpoint_name,
+            changed.join(", ")
+        );
+        if case_options.publish {
+            println!("Published {} managed override files.", written.len());
+        }
+    }
+    Ok(())
+}
+
+fn cli_case_delete(
+    options: &CliOptions,
+    args: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut publish_after = false;
+    let mut positional = vec![];
+    for arg in args {
+        match arg.as_str() {
+            "--publish" => publish_after = true,
+            value if value.starts_with('-') => {
+                return Err(format!("unknown option: {value}").into())
+            }
+            value => positional.push(value.to_string()),
+        }
+    }
+    if positional.len() < 2 {
+        return Err("case delete requires <endpoint> and <case>".into());
+    }
+    if positional.len() > 2 {
+        return Err("case delete accepts exactly <endpoint> and <case>".into());
+    }
+
+    let mut store = load_cli_store(options)?;
+    let endpoint = find_endpoint_mut(&mut store, &positional[0])?;
+    if endpoint.cases.len() <= 1 {
+        return Err("each endpoint must keep at least one case".into());
+    }
+    let case_index = find_case_index(endpoint, &positional[1])?;
+    let removed_case = endpoint.cases.remove(case_index);
+    if endpoint.active_case_id.as_deref() == Some(removed_case.id.as_str()) {
+        endpoint.active_case_id = endpoint.cases.first().map(|mock_case| mock_case.id.clone());
+    }
+    let endpoint_name = endpoint.name.clone();
+    normalize_store(&mut store);
+    save_cli_store(options, &store)?;
+    let written = if publish_after {
+        publish(&store)?
+    } else {
+        vec![]
+    };
+
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "endpoint": endpoint_name,
+                "deletedCase": removed_case,
+                "published": publish_after,
+                "written": written,
+            }))?
+        );
+    } else {
+        println!(
+            "Deleted case `{}` from `{endpoint_name}`.",
+            removed_case.name
+        );
+        if publish_after {
+            println!("Published {} managed override files.", written.len());
+        }
+    }
+    Ok(())
+}
+
+fn parse_case_edit_args(
+    args: &[String],
+) -> Result<(Vec<String>, CliCaseEditOptions), Box<dyn std::error::Error>> {
+    let mut positional = vec![];
+    let mut options = CliCaseEditOptions::default();
+    let mut index = 0usize;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--publish" => options.publish = true,
+            "--activate" => options.activate = true,
+            "--no-activate" => options.no_activate = true,
+            "--name" | "-n" => {
+                options.name = Some(take_cli_value(args, &mut index, "--name")?);
+            }
+            value if value.starts_with("--name=") => {
+                options.name = Some(value.trim_start_matches("--name=").to_string());
+            }
+            "--body" => {
+                options.body = Some(take_cli_value(args, &mut index, "--body")?);
+            }
+            value if value.starts_with("--body=") => {
+                options.body = Some(value.trim_start_matches("--body=").to_string());
+            }
+            "--body-file" => {
+                let path = take_cli_value(args, &mut index, "--body-file")?;
+                options.body = Some(read_cli_text_source(&path)?);
+            }
+            value if value.starts_with("--body-file=") => {
+                options.body = Some(read_cli_text_source(
+                    value.trim_start_matches("--body-file="),
+                )?);
+            }
+            "--body-stdin" => {
+                options.body = Some(read_cli_text_source("-")?);
+            }
+            "--status" => {
+                let value = take_cli_value(args, &mut index, "--status")?;
+                options.status = Some(parse_http_status(&value)?);
+            }
+            value if value.starts_with("--status=") => {
+                options.status = Some(parse_http_status(value.trim_start_matches("--status="))?);
+            }
+            "--headers" => {
+                options.headers = Some(take_cli_value(args, &mut index, "--headers")?);
+            }
+            value if value.starts_with("--headers=") => {
+                options.headers = Some(value.trim_start_matches("--headers=").to_string());
+            }
+            "--headers-file" => {
+                let path = take_cli_value(args, &mut index, "--headers-file")?;
+                options.headers = Some(read_cli_text_source(&path)?);
+            }
+            value if value.starts_with("--headers-file=") => {
+                options.headers = Some(read_cli_text_source(
+                    value.trim_start_matches("--headers-file="),
+                )?);
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown option: {value}").into());
+            }
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    Ok((positional, options))
+}
+
 fn cli_import_curl(
     options: &CliOptions,
     args: &[String],
@@ -1112,21 +1812,101 @@ fn find_case<'a>(
     endpoint: &'a Endpoint,
     query: &str,
 ) -> Result<&'a MockCase, Box<dyn std::error::Error>> {
+    let index = find_case_index(endpoint, query)?;
+    Ok(&endpoint.cases[index])
+}
+
+fn find_case_index(endpoint: &Endpoint, query: &str) -> Result<usize, Box<dyn std::error::Error>> {
     let query_lower = query.to_lowercase();
     let matches = endpoint
         .cases
         .iter()
+        .enumerate()
         .filter(|mock_case| {
-            mock_case.id == query
-                || mock_case.name.eq_ignore_ascii_case(query)
-                || mock_case.name.to_lowercase().contains(&query_lower)
+            mock_case.1.id == query
+                || mock_case.1.name.eq_ignore_ascii_case(query)
+                || mock_case.1.name.to_lowercase().contains(&query_lower)
         })
+        .map(|(index, _)| index)
         .collect::<Vec<_>>();
     match matches.as_slice() {
-        [mock_case] => Ok(mock_case),
+        [index] => Ok(*index),
         [] => Err(format!("case not found: {query}").into()),
         _ => Err(format!("case query is ambiguous: {query}").into()),
     }
+}
+
+fn take_cli_value(
+    args: &[String],
+    index: &mut usize,
+    option: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    *index += 1;
+    args.get(*index)
+        .cloned()
+        .ok_or_else(|| format!("{option} requires a value").into())
+}
+
+fn read_cli_text_source(source: &str) -> Result<String, Box<dyn std::error::Error>> {
+    if source == "-" {
+        let mut stdin = String::new();
+        io::stdin().read_to_string(&mut stdin)?;
+        return Ok(stdin);
+    }
+    Ok(fs::read_to_string(source)?)
+}
+
+fn parse_http_status(value: &str) -> Result<i32, Box<dyn std::error::Error>> {
+    let status = value
+        .parse::<i32>()
+        .map_err(|_| format!("invalid status code: {value}"))?;
+    if !(100..=599).contains(&status) {
+        return Err(format!("status code out of range: {value}").into());
+    }
+    Ok(status)
+}
+
+fn split_cli_tags(value: &str) -> Vec<String> {
+    value
+        .split([',', '\n'])
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn unique_non_empty_values(values: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    values
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
+}
+
+fn remember_group_path(store: &mut Store, group_path: &str) {
+    let clean_group = sanitized_relative_path(group_path);
+    if clean_group.is_empty() {
+        return;
+    }
+    let mut group_paths = store.group_paths.take().unwrap_or_default();
+    for ancestor in ancestor_group_paths(&clean_group) {
+        if !group_paths.iter().any(|path| path == &ancestor) {
+            group_paths.push(ancestor);
+        }
+    }
+    store.group_paths = Some(group_paths);
+}
+
+fn ancestor_group_paths(group_path: &str) -> Vec<String> {
+    let parts = group_path
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    (1..=parts.len())
+        .map(|index| parts[..index].join("/"))
+        .collect()
 }
 
 fn require_store(store: Option<Store>) -> Result<Store, Box<dyn std::error::Error>> {
@@ -1142,9 +1922,11 @@ fn default_store(default_overrides_folder: &str) -> Store {
             enabled: false,
             provider: "openrouter".to_string(),
             model: String::new(),
+            models: HashMap::new(),
             api_key: String::new(),
             api_keys: HashMap::new(),
             base_url: String::new(),
+            ai_grouping_prompt: String::new(),
             cli_preset_id: Some("codex-cli".to_string()),
             cli_presets: default_cli_presets(),
         }),
@@ -1851,9 +2633,11 @@ fn generate_ai_mock(
         enabled: false,
         provider: "openrouter".to_string(),
         model: String::new(),
+        models: HashMap::new(),
         api_key: String::new(),
         api_keys: HashMap::new(),
         base_url: String::new(),
+        ai_grouping_prompt: String::new(),
         cli_preset_id: Some("codex-cli".to_string()),
         cli_presets: default_cli_presets(),
     });
@@ -1948,6 +2732,273 @@ fn generate_ai_mock(
     );
     let content = read_ai_stream(response)?;
     parse_ai_preview_payload(request.mode, &content)
+}
+
+fn generate_ai_metadata(
+    store: &Store,
+    request: AiMetadataRequest,
+) -> Result<AiMetadataPreviewPayload, Box<dyn std::error::Error>> {
+    emit_ai_progress("preparing", "正在准备 AI 命名请求...", None, None);
+    let settings = store.ai_settings.clone().unwrap_or(AiSettings {
+        enabled: false,
+        provider: "openrouter".to_string(),
+        model: String::new(),
+        models: HashMap::new(),
+        api_key: String::new(),
+        api_keys: HashMap::new(),
+        base_url: String::new(),
+        ai_grouping_prompt: String::new(),
+        cli_preset_id: Some("codex-cli".to_string()),
+        cli_presets: default_cli_presets(),
+    });
+    if !settings.enabled {
+        return Err("AI 功能未启用。".into());
+    }
+
+    let prompt = ai_metadata_prompt(&request);
+    let content = if is_local_cli_provider(&settings.provider) {
+        match settings.provider.as_str() {
+            "codex-cli" => {
+                if has_selected_cli_preset(&settings) {
+                    run_custom_cli_preset(&settings, &prompt)?
+                } else {
+                    run_codex_cli(settings.model.trim(), &prompt)?
+                }
+            }
+            "claude-cli" => {
+                if has_selected_cli_preset(&settings) {
+                    run_custom_cli_preset(&settings, &prompt)?
+                } else {
+                    run_claude_cli(settings.model.trim(), &prompt, None)?
+                }
+            }
+            "custom-cli" => run_custom_cli_preset(&settings, &prompt)?,
+            _ => return Err("不支持的本地 AI CLI。".into()),
+        }
+    } else {
+        let provider_api_keys = settings
+            .api_keys
+            .get(&settings.provider)
+            .map(String::as_str)
+            .unwrap_or("");
+        let api_key_text = if settings.api_key.trim().is_empty() {
+            provider_api_keys
+        } else {
+            settings.api_key.as_str()
+        };
+        let api_key = api_key_text
+            .split([',', '\n'])
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+            .unwrap_or("");
+        if api_key.is_empty() {
+            return Err("请先配置 AI API Key。".into());
+        }
+        if settings.model.trim().is_empty() {
+            return Err("请先配置 AI 模型。".into());
+        }
+
+        let base_url = ai_base_url(&settings);
+        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()?;
+        let mut body = json!({
+            "model": settings.model.trim(),
+            "temperature": 0.1,
+            "messages": [{ "role": "user", "content": prompt }],
+            "stream": true,
+        });
+        if settings.provider != "gemini" {
+            body["response_format"] = json!({ "type": "json_object" });
+            body["max_tokens"] = json!(600);
+        }
+        let mut builder = client
+            .post(url)
+            .bearer_auth(api_key)
+            .header("Content-Type", "application/json")
+            .json(&body);
+        if settings.provider == "openrouter" {
+            builder = builder
+                .header("X-OpenRouter-Title", "MockKit")
+                .header("HTTP-Referer", "https://github.com");
+        }
+        emit_ai_progress(
+            "connecting",
+            "正在发送 AI 命名请求，等待模型开始响应...",
+            None,
+            None,
+        );
+        let response = builder.send()?;
+        let status = response.status();
+        if !status.is_success() {
+            let response_text = response.text()?;
+            return Err(format_ai_error(status.as_u16(), &response_text).into());
+        }
+        read_ai_stream(response)?
+    };
+
+    parse_ai_metadata_payload(&request, &content)
+}
+
+fn generate_ai_grouping(
+    store: &Store,
+    request: AiGroupingRequest,
+) -> Result<AiGroupingPreviewPayload, Box<dyn std::error::Error>> {
+    emit_ai_progress("preparing", "正在准备 AI 分组请求...", None, None);
+    let settings = store.ai_settings.clone().unwrap_or(AiSettings {
+        enabled: false,
+        provider: "openrouter".to_string(),
+        model: String::new(),
+        models: HashMap::new(),
+        api_key: String::new(),
+        api_keys: HashMap::new(),
+        base_url: String::new(),
+        ai_grouping_prompt: String::new(),
+        cli_preset_id: Some("codex-cli".to_string()),
+        cli_presets: default_cli_presets(),
+    });
+    if !settings.enabled {
+        return Err("AI 功能未启用。".into());
+    }
+
+    let prompt = ai_grouping_prompt(&request);
+    let content = if is_local_cli_provider(&settings.provider) {
+        match settings.provider.as_str() {
+            "codex-cli" => {
+                if has_selected_cli_preset(&settings) {
+                    run_custom_cli_preset(&settings, &prompt)?
+                } else {
+                    run_codex_cli(settings.model.trim(), &prompt)?
+                }
+            }
+            "claude-cli" => {
+                if has_selected_cli_preset(&settings) {
+                    run_custom_cli_preset(&settings, &prompt)?
+                } else {
+                    run_claude_cli(settings.model.trim(), &prompt, None)?
+                }
+            }
+            "custom-cli" => run_custom_cli_preset(&settings, &prompt)?,
+            _ => return Err("不支持的本地 AI CLI。".into()),
+        }
+    } else {
+        let provider_api_keys = settings
+            .api_keys
+            .get(&settings.provider)
+            .map(String::as_str)
+            .unwrap_or("");
+        let api_key_text = if settings.api_key.trim().is_empty() {
+            provider_api_keys
+        } else {
+            settings.api_key.as_str()
+        };
+        let api_key = api_key_text
+            .split([',', '\n'])
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+            .unwrap_or("");
+        if api_key.is_empty() {
+            return Err("请先配置 AI API Key。".into());
+        }
+        if settings.model.trim().is_empty() {
+            return Err("请先配置 AI 模型。".into());
+        }
+
+        let base_url = ai_base_url(&settings);
+        let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .build()?;
+        let mut body = json!({
+            "model": settings.model.trim(),
+            "temperature": 0.15,
+            "messages": [{ "role": "user", "content": prompt }],
+            "stream": true,
+        });
+        if settings.provider != "gemini" {
+            body["response_format"] = json!({ "type": "json_object" });
+            body["max_tokens"] = json!(2200);
+        }
+        let mut builder = client
+            .post(url)
+            .bearer_auth(api_key)
+            .header("Content-Type", "application/json")
+            .json(&body);
+        if settings.provider == "openrouter" {
+            builder = builder
+                .header("X-OpenRouter-Title", "MockKit")
+                .header("HTTP-Referer", "https://github.com");
+        }
+        emit_ai_progress(
+            "connecting",
+            "正在发送 AI 分组请求，等待模型开始响应...",
+            None,
+            None,
+        );
+        let response = builder.send()?;
+        let status = response.status();
+        if !status.is_success() {
+            let response_text = response.text()?;
+            return Err(format_ai_error(status.as_u16(), &response_text).into());
+        }
+        read_ai_stream(response)?
+    };
+
+    parse_ai_grouping_payload(&request, &content)
+}
+
+fn parse_ai_grouping_payload(
+    request: &AiGroupingRequest,
+    content: &str,
+) -> Result<AiGroupingPreviewPayload, Box<dyn std::error::Error>> {
+    emit_ai_progress("parsing", "正在解析 AI 分组结果...", None, Some(content));
+    let json_text = extract_json_object(content)?;
+    let mut preview: AiGroupingPreviewPayload = serde_json::from_str(&json_text)
+        .map_err(|error| format!("AI 分组结果不是有效 JSON：{error}"))?;
+    let endpoint_ids = request
+        .endpoints
+        .iter()
+        .map(|endpoint| endpoint.id.as_str())
+        .collect::<HashSet<_>>();
+    preview.groups = preview
+        .groups
+        .into_iter()
+        .filter_map(|item| {
+            if !endpoint_ids.contains(item.endpoint_id.as_str()) {
+                return None;
+            }
+            let group_path = sanitized_relative_path(&item.group_path);
+            if group_path.is_empty() {
+                return None;
+            }
+            Some(AiGroupingAssignment { group_path, ..item })
+        })
+        .collect();
+    if preview.groups.is_empty() {
+        return Err("AI 没有返回可用分组建议。".into());
+    }
+    Ok(preview)
+}
+
+fn parse_ai_metadata_payload(
+    request: &AiMetadataRequest,
+    content: &str,
+) -> Result<AiMetadataPreviewPayload, Box<dyn std::error::Error>> {
+    emit_ai_progress("parsing", "正在解析 AI 命名结果...", None, Some(content));
+    let json_text = extract_json_object(content)?;
+    let mut preview: AiMetadataPreviewPayload = serde_json::from_str(&json_text)
+        .map_err(|error| format!("AI 命名结果不是有效 JSON：{error}"))?;
+    preview.endpoint_id = request.endpoint.id.clone();
+    preview.name = preview.name.trim().to_string();
+    preview.description = preview.description.trim().to_string();
+    if preview.name.is_empty() {
+        preview.name = request.endpoint.name.trim().to_string();
+    }
+    if preview.name.is_empty() {
+        return Err("AI 没有返回可用接口名称。".into());
+    }
+    Ok(preview)
 }
 
 fn parse_ai_preview_payload(
@@ -2883,6 +3934,132 @@ Override 路径：{override_path}
     )
 }
 
+fn ai_metadata_prompt(request: &AiMetadataRequest) -> String {
+    let endpoint = &request.endpoint;
+    let case_summary = endpoint
+        .cases
+        .iter()
+        .map(|item| format!("场景：{}\n{}", item.name, truncate_chars(&item.body, 900)))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let instruction = if request.instruction.trim().is_empty() {
+        "根据接口真实用途重新命名标题，并生成一句简洁说明。"
+    } else {
+        request.instruction.trim()
+    };
+    let group_path = endpoint.group_path.as_deref().unwrap_or("");
+
+    format!(
+        r#"你是一个资深前端接口 Mock 信息整理助手。请根据接口路径、当前名称、说明、标签、场景和响应体，为这个接口生成更易读的标题和说明。
+必须只返回 JSON 对象，不要 Markdown，不要解释，不要代码围栏。
+
+返回格式固定为：
+{{
+  "name": "简洁接口标题",
+  "description": "一句话说明接口用途"
+}}
+
+要求：
+- name 使用简洁中文业务名称，优先 4 到 16 个中文字符；如果业务名无法可靠判断，可以保留关键英文服务名但去掉冗长包名、域名、版本号和文件后缀。
+- description 用一句话说明接口用途，不超过 36 个中文字符；不要复述完整路径。
+- 根据响应体字段、message、data 结构和场景名推断业务语义，避免只翻译路径片段。
+- 不要把 xapi、api、json、mock、response、1.0、method 等技术噪声放进标题。
+- 如果当前标题或说明已经准确，可以小幅优化，不要为了变化而变化。
+
+用户要求：{instruction}
+
+当前名称：{}
+请求方法：{}
+Override 路径：{}
+当前分组：{}
+当前说明：{}
+标签：{}
+当前场景：{}
+
+当前响应体：
+{}
+
+已有场景摘要：
+{case_summary}
+"#,
+        endpoint.name,
+        endpoint.method,
+        endpoint.override_path,
+        if group_path.is_empty() {
+            "无"
+        } else {
+            group_path
+        },
+        if endpoint.description.trim().is_empty() {
+            "无"
+        } else {
+            endpoint.description.trim()
+        },
+        endpoint.tags.join(", "),
+        endpoint.active_case_name,
+        truncate_chars(&endpoint.active_body, 5000)
+    )
+}
+
+fn ai_grouping_prompt(request: &AiGroupingRequest) -> String {
+    let endpoint_summary = request
+        .endpoints
+        .iter()
+        .map(|endpoint| {
+            format!(
+                "- id: {}\n  name: {}\n  method: {}\n  overridePath: {}\n  currentGroup: {}\n  description: {}\n  tags: {}",
+                endpoint.id,
+                endpoint.name,
+                endpoint.method,
+                endpoint.override_path,
+                endpoint.group_path.as_deref().unwrap_or(""),
+                if endpoint.description.trim().is_empty() {
+                    "无"
+                } else {
+                    endpoint.description.trim()
+                },
+                endpoint.tags.join(", ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let instruction = if request.instruction.trim().is_empty() {
+        "按业务域自动归类，分组名使用简洁中文，尽量使用一到两级路径。"
+    } else {
+        request.instruction.trim()
+    };
+
+    format!(
+        r#"你是一个资深前端 Mock 接口目录整理助手。请根据接口名称、HTTP 方法、Override 路径、说明、标签和已有分组，为每个接口建议业务分组。
+必须只返回 JSON 对象，不要 Markdown，不要解释，不要代码围栏。
+
+返回格式固定为：
+{{
+  "groups": [
+    {{
+      "endpointId": "接口 id",
+      "groupPath": "业务域/子模块",
+      "reason": "可选，简短说明"
+    }}
+  ]
+}}
+
+要求：
+- 必须覆盖输入中的每个 endpointId，且不要返回不存在的 endpointId。
+- groupPath 使用简洁中文，优先一到两级，例如 用户中心/登录、订单/售后、营销/优惠券。
+- 不要把域名、版本号、api、json、mock、response 作为分组名。
+- 同一业务域尽量复用同一个 groupPath，不要为每个接口创造过细目录。
+- 如果已有 currentGroup 合理，可以沿用或微调。
+- reason 不超过 28 个中文字符。
+
+用户要求：{instruction}
+
+接口列表：
+{endpoint_summary}
+"#
+    )
+}
+
 fn extract_json_object(text: &str) -> Result<String, Box<dyn std::error::Error>> {
     let source = text.replace("```json", "```").trim().to_string();
     let unfenced = if let Some(start) = source.find("```") {
@@ -3032,14 +4209,24 @@ fn normalize_store(store: &mut Store) {
             enabled: false,
             provider: "openrouter".to_string(),
             model: String::new(),
+            models: HashMap::new(),
             api_key: String::new(),
             api_keys: HashMap::new(),
             base_url: String::new(),
+            ai_grouping_prompt: String::new(),
             cli_preset_id: Some("codex-cli".to_string()),
             cli_presets: default_cli_presets(),
         });
     }
     if let Some(settings) = &mut store.ai_settings {
+        if !settings.model.trim().is_empty() && !settings.models.contains_key(&settings.provider) {
+            settings
+                .models
+                .insert(settings.provider.clone(), settings.model.clone());
+        }
+        if let Some(provider_model) = settings.models.get(&settings.provider) {
+            settings.model = provider_model.clone();
+        }
         let existing_presets = settings.cli_presets.clone();
         let custom_presets = existing_presets
             .iter()

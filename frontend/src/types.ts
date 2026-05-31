@@ -47,9 +47,11 @@ export interface AiSettings {
   enabled: boolean;
   provider: AiProvider;
   model: string;
+  models?: Partial<Record<AiProvider, string>>;
   apiKey: string;
   apiKeys?: Partial<Record<AiProvider, string>>;
   baseUrl: string;
+  aiGroupingPrompt?: string;
   cliPresetId?: string;
   cliPresets?: AiCliPreset[];
 }
@@ -83,6 +85,13 @@ export interface MockCase {
   headers: string;
 }
 
+export interface EndpointSearchMatch {
+  responseBody?: {
+    caseName: string;
+    snippet: string;
+  };
+}
+
 export interface NativePayload {
   store?: Store;
   message?: string;
@@ -90,6 +99,9 @@ export interface NativePayload {
   importedEndpointId?: string;
   importedCaseId?: string;
   aiPreview?: AiPreview;
+  aiMetadataPreview?: AiMetadataPreview;
+  aiMetadataEndpointId?: string;
+  aiGroupingPreview?: AiGroupingPreview;
   aiProgress?: AiProgress;
 }
 
@@ -100,6 +112,8 @@ export interface NativeMessage {
   curl?: string;
   fetchResponse?: boolean;
   aiRequest?: AiRequest;
+  aiMetadataRequest?: AiMetadataRequest;
+  aiGroupingRequest?: AiGroupingRequest;
 }
 
 export interface AiRequest {
@@ -125,9 +139,52 @@ export interface AiPreview {
   }>;
 }
 
+export interface AiMetadataRequest {
+  instruction: string;
+  endpoint: {
+    id: string;
+    name: string;
+    method: string;
+    overridePath: string;
+    groupPath?: string | null;
+    description: string;
+    tags: string[];
+    activeCaseName: string;
+    activeBody: string;
+    cases: Array<{ name: string; body: string }>;
+  };
+}
+
+export interface AiMetadataPreview {
+  endpointId: string;
+  name: string;
+  description: string;
+}
+
 export interface AiProgress {
   stage: "starting" | "preparing" | "connecting" | "streaming" | "parsing" | "complete" | "error" | string;
   message: string;
   bytes?: number | null;
   content?: string | null;
+}
+
+export interface AiGroupingRequest {
+  instruction: string;
+  endpoints: Array<{
+    id: string;
+    name: string;
+    method: string;
+    overridePath: string;
+    groupPath?: string | null;
+    description: string;
+    tags: string[];
+  }>;
+}
+
+export interface AiGroupingPreview {
+  groups: Array<{
+    endpointId: string;
+    groupPath: string;
+    reason?: string;
+  }>;
 }

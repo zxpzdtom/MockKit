@@ -13,10 +13,17 @@ function TooltipProvider({
 function Tooltip({
   children,
   content,
+  align,
+  avoidCollisions,
+  side,
+  sideOffset,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Root> & {
   content?: React.ReactNode;
-}) {
+} & Pick<
+    React.ComponentProps<typeof TooltipPrimitive.Content>,
+    "align" | "avoidCollisions" | "side" | "sideOffset"
+  >) {
   if (content == null) {
     return (
       <TooltipPrimitive.Root data-slot="tooltip" {...props}>
@@ -28,7 +35,9 @@ function Tooltip({
   return (
     <TooltipPrimitive.Root data-slot="tooltip" {...props}>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent>{content}</TooltipContent>
+      <TooltipContent align={align} avoidCollisions={avoidCollisions} side={side} sideOffset={sideOffset}>
+        {content}
+      </TooltipContent>
     </TooltipPrimitive.Root>
   );
 }

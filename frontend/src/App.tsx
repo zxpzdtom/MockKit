@@ -1,3 +1,5 @@
+import { AiGroupingDialog } from "@/components/ai-grouping-dialog";
+import { AiGroupingScopeDialog } from "@/components/ai-grouping-scope-dialog";
 import { AppSettingsDialog } from "@/components/app-settings-dialog";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CreateGroupDialog } from "@/components/create-group-dialog";
@@ -34,6 +36,7 @@ import { Tooltip, TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { FileContents } from "@pierre/diffs/react";
 import {
+  Braces,
   Check,
   ChevronDown,
   ChevronRight,
@@ -61,13 +64,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast as sonnerToast } from "sonner";
 import { formatJson, getJsonStatus } from "./lib/json";
 import { send } from "./lib/native";
+import { generateEndpointTypeScript } from "./lib/typescript-from-json";
 import type {
   AiCliPreset,
+  AiGroupingPreview,
+  AiMetadataPreview,
   AiPreview,
   AiProgress,
   AiSettings,
   AppTheme,
   Endpoint,
+  EndpointSearchMatch,
   MockCase,
   NativePayload,
   Store,
@@ -77,13 +84,17 @@ import type {
 const successBody = '{\n  "code": 200,\n  "message": "success",\n  "data": {}\n}';
 const failureBody = '{\n  "code": 500,\n  "message": "server error",\n  "data": null\n}';
 const emptyBody = '{\n  "code": 200,\n  "message": "success",\n  "data": []\n}';
+const defaultAiGroupingPrompt =
+  "你是一个资深前端 Mock 接口目录整理助手。请按业务域为接口建议分组。分组名使用简洁中文，优先一到两级路径；优先复用语义相近的已有分组；不要把域名、版本号、api、json、mock、response 作为分组名；不要为每个接口创造过细目录。";
 const defaultAiSettings: AiSettings = {
   enabled: false,
   provider: "openrouter",
   model: "",
+  models: {},
   apiKey: "",
   apiKeys: {},
   baseUrl: "",
+  aiGroupingPrompt: defaultAiGroupingPrompt,
   cliPresetId: "codex-cli",
   cliPresets: [],
 };
@@ -122,7 +133,15 @@ const appThemes = new Set<AppTheme>([
   "bubblegum",
 ]);
 const localAiProviders = new Set<AiSettings["provider"]>(["codex-cli", "claude-cli", "custom-cli"]);
+function defaultModelForProvider(provider: AiSettings["provider"]) {
+  if (provider === "gemini") return "gemini-2.5-flash";
+  if (provider === "openai") return "gpt-4.1-mini";
+  return "";
+}
+
 const nativeDragRegionSelector = "[data-native-drag-region='true']";
+const codeEditorShortcutScopeSelector =
+  ".cm-editor, .code-editor, .fullscreen-code-editor, .curl-code-editor";
 const nativeNoDragSelector = [
   "button",
   "input",
@@ -139,6 +158,10 @@ const editTriggerClass =
 const editorActionsClass =
   "flex items-center gap-[5px] [&_[data-slot=button]]:h-7 [&_[data-slot=button]]:rounded-[7px] [&_[data-slot=button]]:border-transparent [&_[data-slot=button]]:bg-[color-mix(in_srgb,var(--panel)_58%,transparent)] [&_[data-slot=button]]:text-[color-mix(in_srgb,var(--text)_82%,var(--muted))] [&_[data-slot=button]]:shadow-none [&_[data-slot=button]]:transition-[background-color,border-color,box-shadow,color,transform] [&_[data-slot=button]]:duration-[120ms] hover:[&_[data-slot=button]]:border-[color-mix(in_srgb,var(--accent)_18%,transparent)] hover:[&_[data-slot=button]]:bg-[color-mix(in_srgb,var(--accent-soft)_42%,var(--panel))] hover:[&_[data-slot=button]]:text-[color-mix(in_srgb,var(--accent)_34%,var(--text))] hover:[&_[data-slot=button]]:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--accent)_7%,transparent)] active:[&_[data-slot=button]]:translate-y-px active:[&_[data-slot=button]]:border-[color-mix(in_srgb,var(--accent)_24%,transparent)] active:[&_[data-slot=button]]:bg-[color-mix(in_srgb,var(--accent-soft)_60%,var(--panel-2))] active:[&_[data-slot=button]]:shadow-[inset_0_1px_1px_rgba(15,23,42,0.08)] [&_[data-slot=button][aria-pressed=true]]:border-[color-mix(in_srgb,var(--accent)_32%,transparent)] [&_[data-slot=button][aria-pressed=true]]:bg-[color-mix(in_srgb,var(--accent-soft)_58%,var(--panel))] [&_[data-slot=button][aria-pressed=true]]:text-[color-mix(in_srgb,var(--accent)_42%,var(--text))] [&_[data-slot=button][aria-pressed=true]]:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--accent)_10%,transparent)]";
 const createId = () => crypto.randomUUID();
+
+function isCodeEditorShortcutTarget(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest(codeEditorShortcutScopeSelector));
+}
 
 function formatDetectedAt(value?: string) {
   if (!value) return "尚未完成检测";
@@ -268,6 +291,7 @@ function normalizeStore(store: Store) {
   store.aiSettings = { ...defaultAiSettings, ...(store.aiSettings ?? {}) };
   store.uiSettings = { ...defaultUiSettings, ...(store.uiSettings ?? {}) };
   if (!appThemes.has(store.uiSettings.theme)) store.uiSettings.theme = defaultUiSettings.theme;
+  store.aiSettings.models = { ...(store.aiSettings.models ?? {}) };
   store.aiSettings.apiKeys = { ...(store.aiSettings.apiKeys ?? {}) };
   const customPresets = (store.aiSettings.cliPresets ?? []).filter(
     (preset) => !defaultCliPresets.some((defaultPreset) => defaultPreset.id === preset.id),
@@ -297,6 +321,13 @@ function normalizeStore(store: Store) {
     store.aiSettings.apiKeys[store.aiSettings.provider] = store.aiSettings.apiKey;
   }
   store.aiSettings.apiKey = store.aiSettings.apiKeys[store.aiSettings.provider] ?? store.aiSettings.apiKey;
+  if (store.aiSettings.model && !store.aiSettings.models[store.aiSettings.provider]) {
+    store.aiSettings.models[store.aiSettings.provider] = store.aiSettings.model;
+  }
+  store.aiSettings.model =
+    store.aiSettings.models[store.aiSettings.provider] ??
+    store.aiSettings.model ??
+    defaultModelForProvider(store.aiSettings.provider);
   store.groupPaths = normalizeGroupPaths(store.groupPaths ?? []);
   for (const endpoint of store.endpoints) {
     endpoint.enabled = endpoint.enabled !== false;
@@ -384,6 +415,60 @@ interface CompactTreeNode extends TreeNode {
 
 type DeleteTarget = DeleteDialogTarget;
 
+interface PersistedUiState {
+  selectedDirectory: string;
+  selectedEndpointId: string | null;
+  selectedCaseId: string | null;
+  expandedDirectories: string[];
+  directoryViewMode: DirectoryViewMode;
+  focusedTreeNodeId: string;
+}
+
+const persistedUiStateKey = "mockkit.uiState.v1";
+
+function readPersistedUiState(): PersistedUiState {
+  const fallback: PersistedUiState = {
+    selectedDirectory: "",
+    selectedEndpointId: null,
+    selectedCaseId: null,
+    expandedDirectories: [""],
+    directoryViewMode: "tree",
+    focusedTreeNodeId: directoryTreeNodeKey(""),
+  };
+
+  try {
+    const raw = window.localStorage.getItem(persistedUiStateKey);
+    if (!raw) return fallback;
+    const parsed = JSON.parse(raw) as Partial<PersistedUiState>;
+    const selectedDirectory = cleanGroupPath(parsed.selectedDirectory ?? "");
+    const expandedDirectories = Array.isArray(parsed.expandedDirectories)
+      ? [...new Set(["", ...parsed.expandedDirectories.map((path) => cleanGroupPath(path)).filter(Boolean)])]
+      : fallback.expandedDirectories;
+
+    return {
+      selectedDirectory,
+      selectedEndpointId: typeof parsed.selectedEndpointId === "string" ? parsed.selectedEndpointId : null,
+      selectedCaseId: typeof parsed.selectedCaseId === "string" ? parsed.selectedCaseId : null,
+      expandedDirectories,
+      directoryViewMode: parsed.directoryViewMode === "flat" ? "flat" : "tree",
+      focusedTreeNodeId:
+        typeof parsed.focusedTreeNodeId === "string" && parsed.focusedTreeNodeId
+          ? parsed.focusedTreeNodeId
+          : directoryTreeNodeKey(selectedDirectory),
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function writePersistedUiState(state: PersistedUiState) {
+  try {
+    window.localStorage.setItem(persistedUiStateKey, JSON.stringify(state));
+  } catch {
+    // Persistence is a convenience; keep the app usable if storage is unavailable.
+  }
+}
+
 function buildDirectoryTree(endpoints: Endpoint[], groupPaths: string[] = []) {
   const root: TreeNode = {
     id: "root",
@@ -441,7 +526,7 @@ function buildDirectoryTree(endpoints: Endpoint[], groupPaths: string[] = []) {
     }
 
     const directoryNode = ensureNode(directoryPath);
-    const fileLabel = getEndpointFileName(endpoint);
+    const fileLabel = getEndpointTreeLabel(endpoint);
     directoryNode.children.push({
       id: `endpoint:${endpoint.id}`,
       type: "file",
@@ -475,9 +560,11 @@ function getEndpointDirectoryPath(endpoint: Endpoint) {
   return (parts.length > 1 ? parts.slice(0, -1) : parts).join("/");
 }
 
-function getEndpointFileName(endpoint: Endpoint) {
+function getEndpointTreeLabel(endpoint: Endpoint) {
+  const title = endpoint.name.trim();
+  if (title) return title;
   const parts = endpoint.overridePath.split("/").filter(Boolean);
-  return parts[parts.length - 1] || endpoint.name || "response.json";
+  return parts[parts.length - 1] || "response.json";
 }
 
 function buildCompactDirectoryTree(node: TreeNode, endpoints: Endpoint[]) {
@@ -592,32 +679,99 @@ function parseSearchQuery(query: string, regexEnabled: boolean) {
     const rawFlags = regexMatch ? regexMatch[2] : "";
     const flags = rawFlags.includes("i") ? rawFlags : `${rawFlags}i`;
     try {
-      return { matcher: (value: string) => new RegExp(pattern, flags).test(value), mode: "regex" as const };
+      return {
+        flags,
+        matcher: (value: string) => new RegExp(pattern, flags).test(value),
+        mode: "regex" as const,
+        pattern,
+        raw: trimmed,
+      };
     } catch {
       return {
         matcher: (value: string) => value.toLowerCase().includes(trimmed.toLowerCase()),
         mode: "text" as const,
+        raw: trimmed,
       };
     }
   }
 
   const normalizedQuery = trimmed.toLowerCase();
-  return { matcher: (value: string) => value.toLowerCase().includes(normalizedQuery), mode: "text" as const };
+  return {
+    matcher: (value: string) => value.toLowerCase().includes(normalizedQuery),
+    mode: "text" as const,
+    raw: trimmed,
+  };
+}
+
+type ParsedSearchQuery = NonNullable<ReturnType<typeof parseSearchQuery>>;
+
+function compactSearchSnippet(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function responseBodySnippet(body: string, search: ParsedSearchQuery) {
+  const compactBody = compactSearchSnippet(body);
+  if (!compactBody) return "";
+
+  let matchIndex = 0;
+  let matchLength = search.raw.length;
+  if (search.mode === "regex" && search.pattern && search.flags) {
+    try {
+      const match = new RegExp(search.pattern, search.flags.replace(/g/g, "")).exec(compactBody);
+      if (match?.index !== undefined) {
+        matchIndex = match.index;
+        matchLength = Math.max(match[0].length, matchLength);
+      }
+    } catch {
+      matchIndex = 0;
+    }
+  } else {
+    const index = compactBody.toLowerCase().indexOf(search.raw.toLowerCase());
+    matchIndex = index >= 0 ? index : 0;
+  }
+
+  const radius = 42;
+  const start = Math.max(0, matchIndex - radius);
+  const end = Math.min(compactBody.length, matchIndex + matchLength + radius);
+  return `${start > 0 ? "..." : ""}${compactBody.slice(start, end)}${end < compactBody.length ? "..." : ""}`;
+}
+
+function endpointSearchMatch(endpoint: Endpoint, search: ParsedSearchQuery) {
+  const haystack = `${endpoint.name} ${endpoint.method} ${endpoint.overridePath} ${endpoint.description}`;
+  const metadataMatched = search.matcher(haystack);
+  const bodyCase = endpoint.cases.find((mockCase) => search.matcher(mockCase.body));
+  if (!metadataMatched && !bodyCase) return null;
+
+  const match: EndpointSearchMatch = {};
+  if (bodyCase) {
+    match.responseBody = {
+      caseName: bodyCase.name,
+      snippet: responseBodySnippet(bodyCase.body, search),
+    };
+  }
+  return match;
 }
 
 export function App() {
   const [store, setStore] = useState<Store | null>(null);
-  const [selectedEndpointId, setSelectedEndpointId] = useState<string | null>(null);
-  const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
+  const [persistedUiState] = useState(() => readPersistedUiState());
+  const [selectedEndpointId, setSelectedEndpointId] = useState<string | null>(
+    persistedUiState.selectedEndpointId,
+  );
+  const [selectedCaseId, setSelectedCaseId] = useState<string | null>(persistedUiState.selectedCaseId);
   const [selectedEndpointIds, setSelectedEndpointIds] = useState(() => new Set<string>());
   const [selectionAnchorEndpointId, setSelectionAnchorEndpointId] = useState<string | null>(null);
-  const [selectedDirectory, setSelectedDirectory] = useState("");
-  const [focusedTreeNodeId, setFocusedTreeNodeId] = useState(directoryTreeNodeKey(""));
-  const [directoryViewMode, setDirectoryViewMode] = useState<DirectoryViewMode>("tree");
+  const [selectedDirectory, setSelectedDirectory] = useState(persistedUiState.selectedDirectory);
+  const [focusedTreeNodeId, setFocusedTreeNodeId] = useState(persistedUiState.focusedTreeNodeId);
+  const [directoryViewMode, setDirectoryViewMode] = useState<DirectoryViewMode>(
+    persistedUiState.directoryViewMode,
+  );
   const [dragOverDirectory, setDragOverDirectory] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [searchRegexEnabled, setSearchRegexEnabled] = useState(false);
-  const [expandedDirectories, setExpandedDirectories] = useState(() => new Set([""]));
+  const [expandedDirectories, setExpandedDirectories] = useState(
+    () => new Set(persistedUiState.expandedDirectories),
+  );
   const [editingTitle, setEditingTitle] = useState(false);
   const [editingTitleDraft, setEditingTitleDraft] = useState("");
   const [editingDescription, setEditingDescription] = useState(false);
@@ -628,6 +782,7 @@ export function App() {
   const [editingCaseName, setEditingCaseName] = useState("");
   const [fullscreenWrapLines, setFullscreenWrapLines] = useState(true);
   const [responseFullscreenOpen, setResponseFullscreenOpen] = useState(false);
+  const [copyingTypeScript, setCopyingTypeScript] = useState(false);
   const [bodyDraft, setBodyDraft] = useState("");
   const [bodyDraftKey, setBodyDraftKey] = useState("");
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
@@ -641,11 +796,19 @@ export function App() {
   const [aiDialogMode, setAiDialogMode] = useState<"single" | "multiple" | null>(null);
   const [aiInstruction, setAiInstruction] = useState("");
   const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiMetadataGeneratingEndpointIds, setAiMetadataGeneratingEndpointIds] = useState(
+    () => new Set<string>(),
+  );
+  const [aiMetadataPreview, setAiMetadataPreview] = useState<AiMetadataPreview | null>(null);
   const [aiPreview, setAiPreview] = useState<AiPreview | null>(null);
   const [aiPreviewTab, setAiPreviewTab] = useState("case-0");
   const [aiPreviewEditingIndex, setAiPreviewEditingIndex] = useState<number | null>(null);
   const [aiPreviewEditingName, setAiPreviewEditingName] = useState("");
   const [aiProgress, setAiProgress] = useState<AiProgress | null>(null);
+  const [aiGroupingScopeOpen, setAiGroupingScopeOpen] = useState(false);
+  const [aiGroupingGenerating, setAiGroupingGenerating] = useState(false);
+  const [aiGroupingPreview, setAiGroupingPreview] = useState<AiGroupingPreview | null>(null);
+  const [aiGroupingPreviewEndpoints, setAiGroupingPreviewEndpoints] = useState<Endpoint[]>([]);
   const bodyPersistTimer = useRef<number | null>(null);
   const caseTabsRef = useRef<HTMLDivElement | null>(null);
   const storeRef = useRef<Store | null>(null);
@@ -685,10 +848,33 @@ export function App() {
       if (payload.importedEndpointId || payload.error) setImportingCurl(false);
       if (payload.aiProgress) setAiProgress(payload.aiProgress);
       if (payload.aiPreview || payload.error) setAiGenerating(false);
+      if (payload.aiMetadataPreview) {
+        const endpointId = payload.aiMetadataPreview.endpointId;
+        setAiMetadataGeneratingEndpointIds((current) => {
+          const next = new Set(current);
+          next.delete(endpointId);
+          return next;
+        });
+      }
+      if (payload.error && payload.aiMetadataEndpointId) {
+        const endpointId = payload.aiMetadataEndpointId;
+        setAiMetadataGeneratingEndpointIds((current) => {
+          const next = new Set(current);
+          next.delete(endpointId);
+          return next;
+        });
+      }
+      if (payload.aiGroupingPreview || payload.error) setAiGroupingGenerating(false);
       if (payload.aiPreview) {
         setAiPreview(payload.aiPreview);
         setAiPreviewTab("case-0");
       }
+      if (payload.aiMetadataPreview) setAiMetadataPreview(payload.aiMetadataPreview);
+      if (payload.aiGroupingPreview) {
+        setAiGroupingScopeOpen(false);
+        setAiGroupingPreview(payload.aiGroupingPreview);
+      }
+      if (payload.error) setAiGroupingPreviewEndpoints([]);
       if (payload.importedEndpointId) {
         setImportOpen(false);
         setCurlText("");
@@ -730,10 +916,24 @@ export function App() {
       setSettingsOpen(true);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (!(event.metaKey && event.key === ",")) return;
-      event.preventDefault();
-      setSettingsSection("appearance");
-      setSettingsOpen(true);
+      if (event.metaKey && event.key === ",") {
+        event.preventDefault();
+        setSettingsSection("appearance");
+        setSettingsOpen(true);
+        return;
+      }
+
+      if (
+        !event.defaultPrevented &&
+        (event.metaKey || event.ctrlKey) &&
+        event.key.toLowerCase() === "f" &&
+        !isCodeEditorShortcutTarget(event.target)
+      ) {
+        event.preventDefault();
+        const searchInput = document.getElementById("endpoint-search-input") as HTMLInputElement | null;
+        searchInput?.focus();
+        searchInput?.select();
+      }
     };
 
     window.addEventListener("keydown", handleKeyDown);
@@ -755,6 +955,16 @@ export function App() {
     [directoryTree, endpoints],
   );
   const displayedDirectoryTree = directoryViewMode === "tree" ? directoryTree : compactDirectoryTree;
+  const availableDirectoryPaths = useMemo(() => {
+    const paths = new Set([""]);
+    for (const groupPath of groupPaths) {
+      for (const path of ancestorDirectoryPaths(groupPath)) paths.add(path);
+    }
+    for (const item of endpoints) {
+      for (const path of ancestorDirectoryPaths(getEndpointDirectoryPath(item))) paths.add(path);
+    }
+    return paths;
+  }, [endpoints, groupPaths]);
   const visibleDirectories = useMemo(
     () => visibleTreeNodes(displayedDirectoryTree, expandedDirectories),
     [displayedDirectoryTree, expandedDirectories],
@@ -763,16 +973,27 @@ export function App() {
     () => endpoints.filter((item) => isEndpointInDirectory(item, selectedDirectory)),
     [endpoints, selectedDirectory],
   );
-  const filteredEndpoints = useMemo(() => {
+  const endpointSearchMatches = useMemo(() => {
     const search = parseSearchQuery(query, searchRegexEnabled);
-    return endpoints.filter((item) => {
-      if (!isEndpointInDirectory(item, selectedDirectory)) return false;
-      if (!search) return true;
-      const haystack = `${item.name} ${item.method} ${item.overridePath} ${item.description}`;
-      return search.matcher(haystack);
-    });
+    const matches = new Map<string, EndpointSearchMatch>();
+    for (const item of endpoints) {
+      if (!isEndpointInDirectory(item, selectedDirectory)) continue;
+      if (!search) {
+        matches.set(item.id, {});
+        continue;
+      }
+      const match = endpointSearchMatch(item, search);
+      if (match) matches.set(item.id, match);
+    }
+    return matches;
   }, [endpoints, query, searchRegexEnabled, selectedDirectory]);
+  const filteredEndpoints = useMemo(
+    () => endpoints.filter((item) => endpointSearchMatches.has(item.id)),
+    [endpoints, endpointSearchMatches],
+  );
   const selectedEndpointCount = selectedEndpointIds.size;
+  const isSelectedEndpointGeneratingMetadata =
+    endpoint ? aiMetadataGeneratingEndpointIds.has(endpoint.id) : false;
   const jsonStatus = useMemo(() => getJsonStatus(currentBodyDraft), [currentBodyDraft]);
   const previewFile = useMemo(() => caseFile(endpoint, mockCase ?? null), [endpoint, mockCase]);
   const aiSettings = store?.aiSettings ?? defaultAiSettings;
@@ -787,6 +1008,24 @@ export function App() {
     document.documentElement.dataset.appTheme = currentTheme;
     document.body.dataset.appTheme = currentTheme;
   }, [currentTheme]);
+
+  useEffect(() => {
+    writePersistedUiState({
+      selectedDirectory,
+      selectedEndpointId,
+      selectedCaseId,
+      expandedDirectories: [...expandedDirectories],
+      directoryViewMode,
+      focusedTreeNodeId,
+    });
+  }, [
+    selectedDirectory,
+    selectedEndpointId,
+    selectedCaseId,
+    expandedDirectories,
+    directoryViewMode,
+    focusedTreeNodeId,
+  ]);
 
   useEffect(() => {
     setEditingTitle(false);
@@ -806,6 +1045,32 @@ export function App() {
   }, [endpoints]);
 
   useEffect(() => {
+    if (!store || availableDirectoryPaths.has(selectedDirectory)) return;
+    const selectedEndpoint = endpoints.find((item) => item.id === selectedEndpointId);
+    const nextDirectory = selectedEndpoint ? getEndpointDirectoryPath(selectedEndpoint) : "";
+    setSelectedDirectory(nextDirectory);
+    setFocusedTreeNodeId(
+      selectedEndpoint ? endpointTreeNodeKey(selectedEndpoint.id) : directoryTreeNodeKey(nextDirectory),
+    );
+    setExpandedDirectories((current) => {
+      const next = new Set(current);
+      for (const path of ancestorDirectoryPaths(nextDirectory)) next.add(path);
+      return next;
+    });
+  }, [availableDirectoryPaths, endpoints, selectedDirectory, selectedEndpointId, store]);
+
+  useEffect(() => {
+    if (!store) return;
+    if (!endpoint) {
+      if (selectedCaseId !== null) setSelectedCaseId(null);
+      return;
+    }
+    if (selectedCaseId && endpoint.cases.some((item) => item.id === selectedCaseId)) return;
+    setSelectedCaseId(activeCase(endpoint)?.id ?? null);
+  }, [endpoint, selectedCaseId, store]);
+
+  useEffect(() => {
+    if (!store || !availableDirectoryPaths.has(selectedDirectory)) return;
     if (directoryEndpoints.length === 0) {
       setSelectedEndpointId(null);
       setSelectedCaseId(null);
@@ -816,7 +1081,7 @@ export function App() {
     const nextEndpoint = directoryEndpoints[0];
     setSelectedEndpointId(nextEndpoint.id);
     setSelectedCaseId(activeCase(nextEndpoint)?.id ?? null);
-  }, [directoryEndpoints, selectedEndpointId]);
+  }, [availableDirectoryPaths, directoryEndpoints, selectedDirectory, selectedEndpointId, store]);
 
   useEffect(() => {
     const nextBody = mockCase?.body ?? "";
@@ -863,7 +1128,6 @@ export function App() {
   const selectDirectory = (path: string) => {
     setFocusedTreeNodeId(directoryTreeNodeKey(path));
     setSelectedDirectory(path);
-    setQuery("");
   };
 
   const scrollTreeNodeIntoView = (key: string) => {
@@ -879,11 +1143,9 @@ export function App() {
     scrollTreeNodeIntoView(directoryTreeNodeKey(path));
   };
 
-  const selectTreeNodeWithScroll = (node: TreeNode) => {
+  const focusTreeNodeWithScroll = (node: TreeNode) => {
     const key = treeNodeKey(node);
     setFocusedTreeNodeId(key);
-    if (node.type === "file") selectEndpointFromTree(node.endpointId);
-    else selectDirectory(node.path);
     scrollTreeNodeIntoView(key);
   };
 
@@ -903,20 +1165,22 @@ export function App() {
     event.preventDefault();
     if (event.key === "ArrowUp") {
       const nextNode = visibleDirectories[Math.max(0, safeIndex - 1)] ?? currentNode;
-      selectTreeNodeWithScroll(nextNode);
+      focusTreeNodeWithScroll(nextNode);
       return;
     }
     if (event.key === "ArrowDown") {
       const nextNode =
         visibleDirectories[Math.min(visibleDirectories.length - 1, safeIndex + 1)] ?? currentNode;
-      selectTreeNodeWithScroll(nextNode);
+      focusTreeNodeWithScroll(nextNode);
       return;
     }
     if (currentNode.type === "file") {
       const currentEndpoint = endpoints.find((item) => item.id === currentNode.endpointId);
       if (event.key === "ArrowLeft" && currentEndpoint) {
-        selectDirectoryWithScroll(getEndpointDirectoryPath(currentEndpoint));
-      } else {
+        const parentPath = getEndpointDirectoryPath(currentEndpoint);
+        setFocusedTreeNodeId(directoryTreeNodeKey(parentPath));
+        scrollTreeNodeIntoView(directoryTreeNodeKey(parentPath));
+      } else if (event.key === "Enter") {
         selectEndpointFromTree(currentNode.endpointId);
       }
       return;
@@ -926,7 +1190,7 @@ export function App() {
         setDirectoryExpanded(currentNode.path, true);
         return;
       }
-      if (currentNode.children.length > 0) selectTreeNodeWithScroll(currentNode.children[0]);
+      if (currentNode.children.length > 0) focusTreeNodeWithScroll(currentNode.children[0]);
       return;
     }
     if (event.key === "ArrowLeft") {
@@ -934,10 +1198,16 @@ export function App() {
         setDirectoryExpanded(currentNode.path, false);
         return;
       }
-      selectDirectoryWithScroll(parentDirectoryPath(currentNode.path));
+      const parentPath = parentDirectoryPath(currentNode.path);
+      setFocusedTreeNodeId(directoryTreeNodeKey(parentPath));
+      scrollTreeNodeIntoView(directoryTreeNodeKey(parentPath));
       return;
     }
-    if (event.key === "Enter" || event.key === " ") {
+    if (event.key === "Enter") {
+      selectDirectoryWithScroll(currentNode.path);
+      return;
+    }
+    if (event.key === " ") {
       if (currentNode.children.length > 0) {
         setDirectoryExpanded(currentNode.path, !expandedDirectories.has(currentNode.path));
       }
@@ -1119,7 +1389,6 @@ export function App() {
     setSelectedEndpointId(item.id);
     setSelectedCaseId(item.activeCaseId ?? item.cases[0]?.id ?? null);
     setSelectionAnchorEndpointId(item.id);
-    setQuery("");
   };
 
   const clearEndpointSelection = () => {
@@ -1156,7 +1425,6 @@ export function App() {
     setSelectedEndpointId(item.id);
     setSelectedCaseId(item.activeCaseId ?? item.cases[0]?.id ?? null);
     setSelectionAnchorEndpointId(item.id);
-    setQuery("");
 
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
@@ -1332,6 +1600,34 @@ export function App() {
     setEditingDescription(false);
     setEditingDescriptionDraft(endpoint?.description ?? "");
   };
+
+  const applyAiMetadataPreview = useCallback(
+    (preview: AiMetadataPreview) => {
+      const nextName = preview.name.trim();
+      const nextDescription = preview.description.trim();
+      const targetEndpointId = preview.endpointId;
+      mutateStore((draft) => {
+        const item = draft.endpoints.find((candidate) => candidate.id === targetEndpointId);
+        if (!item) return;
+        if (nextName) item.name = nextName;
+        if (nextDescription) item.description = nextDescription;
+      });
+      if (targetEndpointId === selectedEndpointId) {
+        setEditingTitle(false);
+        setEditingDescription(false);
+        setEditingTitleDraft(nextName || endpoint?.name || "");
+        setEditingDescriptionDraft(nextDescription || endpoint?.description || "");
+      }
+      showToast("已用 AI 更新接口名称和说明。");
+    },
+    [endpoint?.description, endpoint?.name, mutateStore, selectedEndpointId, showToast],
+  );
+
+  useEffect(() => {
+    if (!aiMetadataPreview) return;
+    applyAiMetadataPreview(aiMetadataPreview);
+    setAiMetadataPreview(null);
+  }, [aiMetadataPreview, applyAiMetadataPreview]);
 
   const updateCase = (field: keyof MockCase, value: string) => {
     mutateStore((draft) => {
@@ -1518,6 +1814,31 @@ export function App() {
     }
   };
 
+  const copyTypeScriptDefinition = () => {
+    if (!endpoint) return;
+    const caseBodyById = mockCase ? { [mockCase.id]: currentBodyDraft } : undefined;
+    setCopyingTypeScript(true);
+    void generateEndpointTypeScript(endpoint, { caseBodyById })
+      .then((result) =>
+        copyTextToClipboard(result.text).then((success) => {
+          if (!success) {
+            showToast("复制失败，请手动复制 TypeScript 定义。", true);
+            return;
+          }
+          const skippedCount = result.skippedCases.length;
+          showToast(
+            skippedCount > 0
+              ? `已复制 ${result.includedCount} 个场景的 TypeScript 定义，跳过 ${skippedCount} 个无效场景。`
+              : `已复制 ${result.includedCount} 个场景的 TypeScript 定义。`,
+          );
+        }),
+      )
+      .catch((error) => {
+        showToast(error instanceof Error ? error.message : "生成 TypeScript 定义失败。", true);
+      })
+      .finally(() => setCopyingTypeScript(false));
+  };
+
   const importCurl = () => {
     const curl = curlText.trim();
     if (!curl) {
@@ -1543,24 +1864,26 @@ export function App() {
         [currentProvider]: patch.apiKey ?? current.apiKey,
       };
       if (typeof patch.apiKey === "string") apiKeys[nextProvider] = patch.apiKey;
+      const models = {
+        ...(current.models ?? {}),
+        [currentProvider]: patch.model ?? current.model,
+      };
+      if (typeof patch.model === "string") models[nextProvider] = patch.model;
+      const nextModel =
+        patch.provider && patch.provider !== current.provider
+          ? (models[nextProvider] ?? defaultModelForProvider(nextProvider))
+          : (patch.model ?? current.model);
       draft.aiSettings = {
         ...current,
         ...patch,
+        models,
         apiKeys,
         apiKey: typeof patch.apiKey === "string" ? patch.apiKey : (apiKeys[nextProvider] ?? ""),
         provider: nextProvider,
         cliPresetId: nextCliPresetId,
-        model:
-          patch.provider && patch.provider !== current.provider
-            ? nextProvider === "gemini"
-              ? "gemini-2.5-flash"
-              : nextProvider === "openai"
-                ? "gpt-4.1-mini"
-                : localAiProviders.has(nextProvider)
-                  ? ""
-                  : ""
-            : (patch.model ?? current.model),
+        model: nextModel,
       };
+      draft.aiSettings.models = { ...models, [draft.aiSettings.provider]: draft.aiSettings.model };
       draft.aiSettings.apiKeys = { ...apiKeys, [draft.aiSettings.provider]: draft.aiSettings.apiKey };
     });
   };
@@ -1618,6 +1941,128 @@ export function App() {
     setAiPreviewTab("case-0");
     setAiPreviewEditingIndex(null);
     setAiProgress(null);
+  };
+
+  const openAiGroupingScope = () => {
+    if (endpoints.length === 0) {
+      showToast("还没有可分组的接口。", true);
+      return;
+    }
+    if (!aiEnabled) {
+      openSettings("ai");
+      return;
+    }
+    setAiGroupingScopeOpen(true);
+  };
+
+  const generateAiMetadata = () => {
+    if (!endpoint || !mockCase) return;
+    if (!aiEnabled) {
+      openSettings("ai");
+      return;
+    }
+    setAiMetadataGeneratingEndpointIds((current) => new Set(current).add(endpoint.id));
+    setAiProgress({ stage: "starting", message: "AI 正在理解接口用途..." });
+    send("generateAiMetadata", {
+      aiMetadataRequest: {
+        instruction: "根据接口真实用途重新命名标题，并同步生成或优化说明。",
+        endpoint: {
+          id: endpoint.id,
+          name: endpoint.name,
+          method: endpoint.method,
+          overridePath: endpoint.overridePath,
+          groupPath: endpoint.groupPath ?? null,
+          description: endpoint.description,
+          tags: endpoint.tags,
+          activeCaseName: mockCase.name,
+          activeBody: currentBodyDraft,
+          cases: endpoint.cases.map((item) => ({ name: item.name, body: item.body })),
+        },
+      },
+    });
+  };
+
+  const generateAiGrouping = (targetEndpoints: Endpoint[]) => {
+    if (targetEndpoints.length === 0) {
+      showToast("请至少选择 1 个接口。", true);
+      return;
+    }
+    const ungroupedEndpoints = endpoints.filter((item) => !cleanGroupPath(item.groupPath ?? ""));
+    const existingGroupSummaries = [
+      ...new Set(endpoints.map((item) => cleanGroupPath(item.groupPath ?? "")).filter(Boolean)),
+    ]
+      .sort((left, right) => left.localeCompare(right))
+      .map((groupPath) => {
+        const groupEndpoints = endpoints.filter((item) => cleanGroupPath(item.groupPath ?? "") === groupPath);
+        const samples = groupEndpoints
+          .slice(0, 3)
+          .map((item) => item.name || item.overridePath)
+          .join("、");
+        return `${groupPath}（${groupEndpoints.length} 个${samples ? `，例如：${samples}` : ""}）`;
+      });
+    const groupingScopeInstruction =
+      targetEndpoints.length < endpoints.length
+        ? `只需要为用户本次选择的 ${targetEndpoints.length} 个接口建议分组。已有分组是可复用的目录上下文，不要返回未选择的接口。`
+        : ungroupedEndpoints.length > 0
+          ? "为所有接口建议分组；已有分组可作为上下文，合理的已有分组应尽量沿用。"
+          : "所有接口都已有业务分组，请检查是否存在明显不合理的归类；合理的已有分组应尽量沿用。";
+    setAiGroupingGenerating(true);
+    setAiGroupingPreview(null);
+    setAiGroupingPreviewEndpoints(targetEndpoints);
+    setAiProgress({ stage: "starting", message: "AI 正在分析接口目录..." });
+    send("generateAiGrouping", {
+      aiGroupingRequest: {
+        instruction: [
+          (aiSettings.aiGroupingPrompt?.trim() || defaultAiGroupingPrompt).trim(),
+          groupingScopeInstruction,
+          "根据接口名称、请求方法、Override 路径和说明，按业务域自动归类。",
+          existingGroupSummaries.length > 0
+            ? `已有分组上下文：${existingGroupSummaries.join("；")}。优先复用语义相近的已有分组。`
+            : "当前还没有已有业务分组，可以创建新的简洁分组。",
+        ].join("\n"),
+        endpoints: targetEndpoints.map((item) => ({
+          id: item.id,
+          name: item.name,
+          method: item.method,
+          overridePath: item.overridePath,
+          groupPath: item.groupPath ?? null,
+          description: item.description,
+          tags: item.tags,
+        })),
+      },
+    });
+  };
+
+  const applyAiGroupingPreview = (assignments: Array<{ endpointId: string; groupPath: string }>) => {
+    const endpointIds = new Set(endpoints.map((item) => item.id));
+    const cleanAssignments = assignments
+      .map((item) => ({
+        endpointId: item.endpointId,
+        groupPath: cleanGroupPath(item.groupPath),
+      }))
+      .filter((item) => endpointIds.has(item.endpointId));
+
+    mutateStore((draft) => {
+      const nextGroupPaths = new Set<string>();
+      for (const assignment of cleanAssignments) {
+        const item = draft.endpoints.find((candidate) => candidate.id === assignment.endpointId);
+        if (!item) continue;
+        item.groupPath = assignment.groupPath || null;
+        if (assignment.groupPath) nextGroupPaths.add(assignment.groupPath);
+      }
+      draft.groupPaths = normalizeGroupPaths([...nextGroupPaths]);
+    });
+    setExpandedDirectories((current) => {
+      const next = new Set(current);
+      next.add("");
+      for (const assignment of cleanAssignments) {
+        for (const path of ancestorDirectoryPaths(assignment.groupPath)) next.add(path);
+      }
+      return next;
+    });
+    setAiGroupingPreview(null);
+    setAiGroupingPreviewEndpoints([]);
+    showToast(`已应用 ${cleanAssignments.length} 个 AI 分组建议。`);
   };
 
   const generateAiMock = () => {
@@ -1756,9 +2201,11 @@ export function App() {
             minSize="232px"
           >
             <AppSidebar
+              aiGroupingEnabled={aiEnabled}
               directoryViewMode={directoryViewMode}
               mockEnabled={store.mockEnabled}
               overridesFolder={store.overridesFolder}
+              onAiGroup={openAiGroupingScope}
               onCreateGroup={openCreateGroupDialog}
               onDirectoryViewModeChange={setDirectoryViewMode}
               onMockEnabledChange={setGlobalEnabled}
@@ -1777,6 +2224,8 @@ export function App() {
                   expandedPaths={expandedDirectories}
                   node={displayedDirectoryTree}
                   overridesFolder={store.overridesFolder}
+                  selectedDirectoryPath={selectedDirectory}
+                  selectedEndpointId={selectedEndpointId}
                   onDragOverPath={setDragOverDirectory}
                   onSelect={selectDirectory}
                   onMoveDirectory={moveDirectory}
@@ -1809,6 +2258,7 @@ export function App() {
                   minSize="300px"
                 >
                   <EndpointListPanel
+                    endpointSearchMatches={endpointSearchMatches}
                     endpoints={endpoints}
                     filteredEndpoints={filteredEndpoints}
                     getEndpointContextIds={getEndpointContextIds}
@@ -1860,20 +2310,43 @@ export function App() {
                               />
                             ) : (
                               <div className="group block min-w-0 max-w-full">
-                                <div className="inline-flex min-w-0 max-w-full items-baseline p-0 text-left text-[21px] font-[720] text-[var(--text)]">
-                                  <span className="min-w-0 max-w-[calc(100%-25px)] truncate">
-                                    {endpoint.name || "未命名接口"}
-                                  </span>
-                                  <Button
-                                    aria-label="编辑接口名称"
-                                    className={cn(editTriggerClass, "ml-[7px] shrink-0 align-[1px]")}
-                                    size="icon-xs"
-                                    type="button"
-                                    variant="ghost"
-                                    onClick={startEditingTitle}
-                                  >
-                                    <Pencil size={12} />
-                                  </Button>
+                                <div className="flex w-full min-w-0 max-w-full items-baseline p-0 text-left text-[21px] font-[720] text-[var(--text)]">
+                                  <span className="min-w-0 truncate">{endpoint.name || "未命名接口"}</span>
+                                  <Tooltip content="编辑接口名称" side="bottom" sideOffset={7}>
+                                    <Button
+                                      aria-label="编辑接口名称"
+                                      className={cn(editTriggerClass, "ml-[7px] shrink-0 align-[1px]")}
+                                      size="icon-xs"
+                                      type="button"
+                                      variant="ghost"
+                                      onClick={startEditingTitle}
+                                    >
+                                      <Pencil size={12} />
+                                    </Button>
+                                  </Tooltip>
+                                  {aiEnabled ? (
+                                    <Tooltip content="AI 重新命名并优化说明" side="bottom" sideOffset={7}>
+                                      <Button
+                                        aria-label="AI 重新命名接口"
+                                        className={cn(
+                                          editTriggerClass,
+                                          "ml-1 shrink-0 align-[1px] text-[color-mix(in_srgb,var(--accent)_60%,var(--text))]",
+                                          isSelectedEndpointGeneratingMetadata && "opacity-100",
+                                        )}
+                                        disabled={isSelectedEndpointGeneratingMetadata}
+                                        size="icon-xs"
+                                        type="button"
+                                        variant="ghost"
+                                        onClick={generateAiMetadata}
+                                      >
+                                        {isSelectedEndpointGeneratingMetadata ? (
+                                          <span className="metadata-ai-spinner" aria-hidden="true" />
+                                        ) : (
+                                          <Sparkles size={12} />
+                                        )}
+                                      </Button>
+                                    </Tooltip>
+                                  ) : null}
                                 </div>
                               </div>
                             )}
@@ -1895,16 +2368,18 @@ export function App() {
                               <div className="group block min-w-0 max-w-full">
                                 <div className="mt-0.5 inline min-w-0 whitespace-pre-wrap p-0 text-left leading-[18px] text-[var(--muted)] [overflow-wrap:anywhere]">
                                   {endpoint.description || "添加说明"}
-                                  <Button
-                                    aria-label="编辑说明"
-                                    className={cn(editTriggerClass, "ml-1.5")}
-                                    size="icon-xs"
-                                    type="button"
-                                    variant="ghost"
-                                    onClick={startEditingDescription}
-                                  >
-                                    <Pencil size={12} />
-                                  </Button>
+                                  <Tooltip content="编辑说明" side="bottom" sideOffset={7}>
+                                    <Button
+                                      aria-label="编辑说明"
+                                      className={cn(editTriggerClass, "ml-1.5")}
+                                      size="icon-xs"
+                                      type="button"
+                                      variant="ghost"
+                                      onClick={startEditingDescription}
+                                    >
+                                      <Pencil size={12} />
+                                    </Button>
+                                  </Tooltip>
                                 </div>
                               </div>
                             )}
@@ -1949,6 +2424,23 @@ export function App() {
                               <span className="truncate text-xs text-[var(--faint)]">双击名称重命名</span>
                             </div>
                             <div className="inline-flex flex-none items-center gap-1">
+                              <Tooltip content="复制所有返回场景的 TypeScript 定义" side="bottom">
+                                <Button
+                                  className="min-h-7 origin-center rounded-lg hover:bg-[color-mix(in_srgb,var(--panel-3)_78%,transparent)] active:scale-95"
+                                  size="sm"
+                                  variant="outline"
+                                  type="button"
+                                  disabled={!endpoint || copyingTypeScript}
+                                  onClick={copyTypeScriptDefinition}
+                                >
+                                  {copyingTypeScript ? (
+                                    <Loader2 className="animate-spin" size={14} />
+                                  ) : (
+                                    <Braces size={14} />
+                                  )}
+                                  复制 TS
+                                </Button>
+                              </Tooltip>
                               {aiEnabled ? (
                                 <Button
                                   className="min-h-7 origin-center rounded-lg hover:bg-[color-mix(in_srgb,var(--panel-3)_78%,transparent)] active:scale-95"
@@ -2134,6 +2626,31 @@ export function App() {
           onOpenChange={setCreateGroupOpen}
         />
 
+        <AiGroupingScopeDialog
+          currentDirectory={selectedDirectory}
+          endpointDirectoryPath={getEndpointDirectoryPath}
+          endpoints={endpoints}
+          expandedDirectoryPaths={expandedDirectories}
+          generating={aiGroupingGenerating}
+          open={aiGroupingScopeOpen}
+          selectedEndpointIds={selectedEndpointIds}
+          onGenerate={generateAiGrouping}
+          onOpenChange={setAiGroupingScopeOpen}
+        />
+
+        <AiGroupingDialog
+          endpoints={aiGroupingPreviewEndpoints.length > 0 ? aiGroupingPreviewEndpoints : endpoints}
+          open={!!aiGroupingPreview}
+          preview={aiGroupingPreview}
+          onApply={applyAiGroupingPreview}
+          onOpenChange={(open) => {
+            if (!open) {
+              setAiGroupingPreview(null);
+              setAiGroupingPreviewEndpoints([]);
+            }
+          }}
+        />
+
         <DeleteConfirmDialog
           target={deleteTarget}
           onConfirm={confirmDelete}
@@ -2152,6 +2669,7 @@ export function App() {
         />
 
         <AppSettingsDialog
+          aiGroupingDefaultPrompt={defaultAiGroupingPrompt}
           aiApiKeyCount={aiApiKeyCount}
           aiApiKeyVisible={aiApiKeyVisible}
           aiEnabled={aiEnabled}
@@ -2433,6 +2951,7 @@ export function App() {
             showCloseButton={false}
             onKeyDownCapture={(event) => {
               if (event.key !== "Escape") return;
+              if (event.target instanceof Element && event.target.closest(".mockkit-search-panel")) return;
               event.preventDefault();
               event.stopPropagation();
             }}
@@ -2516,6 +3035,8 @@ interface DirectoryNodeProps {
   focusedNodeId: string;
   node: TreeNode;
   overridesFolder: string;
+  selectedDirectoryPath: string;
+  selectedEndpointId: string | null;
   onDragOverPath(path: string | null): void;
   onMoveDirectory(sourcePath: string, targetPath: string): void;
   onRequestDeleteDirectory(path: string): void;
@@ -2534,6 +3055,8 @@ function DirectoryNode({
   focusedNodeId,
   node,
   overridesFolder,
+  selectedDirectoryPath,
+  selectedEndpointId,
   onDragOverPath,
   onMoveDirectory,
   onRequestDeleteDirectory,
@@ -2553,7 +3076,9 @@ function DirectoryNode({
     childEndpoints.some((item) => item.enabled === false);
   const expanded = expandedPaths.has(node.path);
   const hasChildren = node.children.length > 0;
-  const active = treeNodeKey(node) === focusedNodeId;
+  const active =
+    node.type === "file" ? node.endpointId === selectedEndpointId : node.path === selectedDirectoryPath;
+  const focused = treeNodeKey(node) === focusedNodeId;
   const dropActive = dragOverPath === node.path;
   const currentDirectoryPath = node.path ? `${overridesFolder}/${node.path}` : overridesFolder;
   const endpointEnabled = endpoint?.enabled !== false;
@@ -2572,6 +3097,7 @@ function DirectoryNode({
                 className={cn(
                   "source-row source-file-row",
                   active && "active",
+                  focused && "focused",
                   !endpointEnabled && "disabled",
                 )}
                 data-directory-path={directoryDomId(node.path)}
@@ -2657,7 +3183,7 @@ function DirectoryNode({
           <ContextMenuTrigger className="source-context-trigger">
             <button
               aria-expanded={hasChildren ? expanded : undefined}
-              className={cn("source-row", active && "active")}
+              className={cn("source-row", active && "active", focused && "focused")}
               data-directory-path={directoryDomId(node.path)}
               data-tree-node-id={treeNodeKey(node)}
               draggable={Boolean(node.path)}
@@ -2749,6 +3275,8 @@ function DirectoryNode({
             key={child.id}
             node={child}
             overridesFolder={overridesFolder}
+            selectedDirectoryPath={selectedDirectoryPath}
+            selectedEndpointId={selectedEndpointId}
             onDragOverPath={onDragOverPath}
             onMoveDirectory={onMoveDirectory}
             onRequestDeleteDirectory={onRequestDeleteDirectory}

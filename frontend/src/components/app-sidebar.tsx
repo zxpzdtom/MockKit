@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Tooltip } from "@/components/ui/tooltip";
-import { FolderOpen, List, ListTree, Plus } from "lucide-react";
+import { FolderOpen, List, ListTree, Plus, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
 import { send } from "../lib/native";
 import { cn } from "../lib/utils";
@@ -11,7 +11,9 @@ const panelLabelClass = "text-[11px] font-[650] uppercase tracking-[0.02em] text
 interface AppSidebarProps {
   children: ReactNode;
   directoryViewMode: "tree" | "flat";
+  aiGroupingEnabled: boolean;
   mockEnabled: boolean;
+  onAiGroup(): void;
   onCreateGroup(): void;
   onDirectoryViewModeChange(mode: "tree" | "flat"): void;
   onMockEnabledChange(enabled: boolean): void;
@@ -21,12 +23,21 @@ interface AppSidebarProps {
 export function AppSidebar({
   children,
   directoryViewMode,
+  aiGroupingEnabled,
   mockEnabled,
+  onAiGroup,
   onCreateGroup,
   onDirectoryViewModeChange,
   onMockEnabledChange,
   overridesFolder,
 }: AppSidebarProps) {
+  const sourceActionTooltipProps = {
+    side: "bottom" as const,
+    align: "center" as const,
+    sideOffset: 7,
+    avoidCollisions: false,
+  };
+
   return (
     <aside className="flex h-full min-w-[232px] flex-col bg-[var(--sidebar)] backdrop-blur-[18px] backdrop-saturate-[1.1]">
       <div className="native-drag-region h-[46px]" data-native-drag-region="true" />
@@ -55,41 +66,66 @@ export function AppSidebar({
       <section className="source-list">
         <div className="source-section-row">
           <div className={panelLabelClass}>目录</div>
-          <Tooltip content="新建业务分组">
-            <Button
-              className="source-add-button"
-              size="icon-xs"
-              variant="ghost"
-              onClick={onCreateGroup}
-              type="button"
-            >
-              <Plus size={13} />
-            </Button>
+          {aiGroupingEnabled ? (
+            <Tooltip content="AI 自动分组" {...sourceActionTooltipProps}>
+              <span className="source-tooltip-trigger">
+                <Button
+                  aria-label="AI 自动分组"
+                  className="source-add-button source-ai-button"
+                  size="icon-xs"
+                  variant="ghost"
+                  onClick={onAiGroup}
+                  type="button"
+                >
+                  <Sparkles size={13} />
+                </Button>
+              </span>
+            </Tooltip>
+          ) : null}
+          <Tooltip content="新建业务分组" {...sourceActionTooltipProps}>
+            <span className="source-tooltip-trigger">
+              <Button
+                aria-label="新建业务分组"
+                className="source-add-button"
+                size="icon-xs"
+                variant="ghost"
+                onClick={onCreateGroup}
+                type="button"
+              >
+                <Plus size={13} />
+              </Button>
+            </span>
           </Tooltip>
           <fieldset className="source-view-toggle" aria-label="目录视图">
-            <Tooltip content="树状目录">
-              <Button
-                aria-pressed={directoryViewMode === "tree"}
-                className={cn("source-view-button", directoryViewMode === "tree" && "active")}
-                size="icon-xs"
-                variant="ghost"
-                onClick={() => onDirectoryViewModeChange("tree")}
-                type="button"
-              >
-                <ListTree size={14} />
-              </Button>
+            <Tooltip content="树状目录" {...sourceActionTooltipProps}>
+              <span className="source-tooltip-trigger">
+                <Button
+                  aria-label="树状目录"
+                  aria-pressed={directoryViewMode === "tree"}
+                  className={cn("source-view-button", directoryViewMode === "tree" && "active")}
+                  size="icon-xs"
+                  variant="ghost"
+                  onClick={() => onDirectoryViewModeChange("tree")}
+                  type="button"
+                >
+                  <ListTree size={14} />
+                </Button>
+              </span>
             </Tooltip>
-            <Tooltip content="合并空目录">
-              <Button
-                aria-pressed={directoryViewMode === "flat"}
-                className={cn("source-view-button", directoryViewMode === "flat" && "active")}
-                size="icon-xs"
-                variant="ghost"
-                onClick={() => onDirectoryViewModeChange("flat")}
-                type="button"
-              >
-                <List size={14} />
-              </Button>
+            <Tooltip content="合并空目录" {...sourceActionTooltipProps}>
+              <span className="source-tooltip-trigger">
+                <Button
+                  aria-label="合并空目录"
+                  aria-pressed={directoryViewMode === "flat"}
+                  className={cn("source-view-button", directoryViewMode === "flat" && "active")}
+                  size="icon-xs"
+                  variant="ghost"
+                  onClick={() => onDirectoryViewModeChange("flat")}
+                  type="button"
+                >
+                  <List size={14} />
+                </Button>
+              </span>
             </Tooltip>
           </fieldset>
         </div>

@@ -45,7 +45,7 @@ mkdir -p "$MACOS" "$RESOURCES"
 cp "$BUILD_DIR/ChromeOverridesManager" "$MACOS/$APP_NAME"
 cp "$CARGO_DIR/mockkit-core" "$MACOS/mockkit-core"
 mkdir -p "$RESOURCES/CLI"
-cp "$CARGO_DIR/mockkit" "$RESOURCES/CLI/mockkit"
+ln -s "../../MacOS/mockkit-core" "$RESOURCES/CLI/mockkit"
 cp -R "$BUILD_DIR/ChromeOverridesManager_ChromeOverridesManager.bundle" "$RESOURCES/"
 cp "$ROOT/assets/AppIcon.icns" "$RESOURCES/AppIcon.icns"
 

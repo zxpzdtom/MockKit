@@ -24,9 +24,11 @@ struct AiSettings: Codable {
     var enabled: Bool?
     var provider: String
     var model: String
+    var models: [String: String]?
     var apiKey: String
     var apiKeys: [String: String]?
     var baseUrl: String
+    var aiGroupingPrompt: String?
     var cliPresetId: String?
     var cliPresets: [AiCliPreset]?
 }
@@ -79,6 +81,22 @@ struct CoreAiPreview: Codable {
     var cases: [AiGeneratedCase]
 }
 
+struct AiGroupingAssignment: Codable {
+    var endpointId: String
+    var groupPath: String
+    var reason: String?
+}
+
+struct CoreAiGroupingPreview: Codable {
+    var groups: [AiGroupingAssignment]
+}
+
+struct CoreAiMetadataPreview: Codable {
+    var endpointId: String
+    var name: String
+    var description: String
+}
+
 struct AiProgressPayload: Codable, Sendable {
     var stage: String
     var message: String
@@ -107,6 +125,39 @@ struct AiMockRequestPayload: Codable {
     var endpoint: AiMockEndpointContext
 }
 
+struct AiMetadataEndpointContext: Codable {
+    var id: String
+    var name: String
+    var method: String
+    var overridePath: String
+    var groupPath: String?
+    var description: String
+    var tags: [String]
+    var activeCaseName: String
+    var activeBody: String
+    var cases: [AiMockCaseContext]
+}
+
+struct AiMetadataRequestPayload: Codable {
+    var instruction: String
+    var endpoint: AiMetadataEndpointContext
+}
+
+struct AiGroupingEndpointContext: Codable {
+    var id: String
+    var name: String
+    var method: String
+    var overridePath: String
+    var groupPath: String?
+    var description: String
+    var tags: [String]
+}
+
+struct AiGroupingRequestPayload: Codable {
+    var instruction: String
+    var endpoints: [AiGroupingEndpointContext]
+}
+
 struct CoreRequest: Codable {
     var command: String
     var storePath: String
@@ -116,6 +167,8 @@ struct CoreRequest: Codable {
     var curl: String?
     var fetchResponse: Bool?
     var aiRequest: AiMockRequestPayload?
+    var aiMetadataRequest: AiMetadataRequestPayload?
+    var aiGroupingRequest: AiGroupingRequestPayload?
 
     init(
         command: String,
@@ -125,7 +178,9 @@ struct CoreRequest: Codable {
         store: Store? = nil,
         curl: String? = nil,
         fetchResponse: Bool? = nil,
-        aiRequest: AiMockRequestPayload? = nil
+        aiRequest: AiMockRequestPayload? = nil,
+        aiMetadataRequest: AiMetadataRequestPayload? = nil,
+        aiGroupingRequest: AiGroupingRequestPayload? = nil
     ) {
         self.command = command
         self.storePath = storePath
@@ -135,6 +190,8 @@ struct CoreRequest: Codable {
         self.curl = curl
         self.fetchResponse = fetchResponse
         self.aiRequest = aiRequest
+        self.aiMetadataRequest = aiMetadataRequest
+        self.aiGroupingRequest = aiGroupingRequest
     }
 }
 
@@ -146,6 +203,8 @@ struct CoreResponse: Codable {
     var importedEndpointId: String?
     var importedCaseId: String?
     var aiPreview: CoreAiPreview?
+    var aiMetadataPreview: CoreAiMetadataPreview?
+    var aiGroupingPreview: CoreAiGroupingPreview?
 }
 
 final class AiProgressLineParser: @unchecked Sendable {
@@ -235,6 +294,30 @@ final class RustCoreClient {
         )
     }
 
+    func generateAiMetadata(
+        store: Store,
+        storePath: URL,
+        aiRequest: AiMetadataRequestPayload,
+        progress: ProgressHandler? = nil
+    ) throws -> CoreResponse {
+        try run(
+            CoreRequest(command: "generateAiMetadata", storePath: storePath.path, store: store, aiMetadataRequest: aiRequest),
+            progress: progress
+        )
+    }
+
+    func generateAiGrouping(
+        store: Store,
+        storePath: URL,
+        aiRequest: AiGroupingRequestPayload,
+        progress: ProgressHandler? = nil
+    ) throws -> CoreResponse {
+        try run(
+            CoreRequest(command: "generateAiGrouping", storePath: storePath.path, store: store, aiGroupingRequest: aiRequest),
+            progress: progress
+        )
+    }
+
     private func run(_ request: CoreRequest, progress: ProgressHandler? = nil) throws -> CoreResponse {
         let requestURL = FileManager.default
             .temporaryDirectory
@@ -277,7 +360,7 @@ final class RustCoreClient {
         switch request.command {
         case "sync":
             timeout = 2.5
-        case "generateAiMock":
+        case "generateAiMock", "generateAiMetadata", "generateAiGrouping":
             timeout = 180
         case "importCurl":
             timeout = request.fetchResponse == true ? 35 : 8
@@ -425,6 +508,22 @@ final class StoreController {
         try core.generateAiMock(store: store, storePath: storeURL, aiRequest: aiRequest, progress: progress)
     }
 
+    func generateAiMetadata(
+        store: Store,
+        aiRequest: AiMetadataRequestPayload,
+        progress: RustCoreClient.ProgressHandler? = nil
+    ) throws -> CoreResponse {
+        try core.generateAiMetadata(store: store, storePath: storeURL, aiRequest: aiRequest, progress: progress)
+    }
+
+    func generateAiGrouping(
+        store: Store,
+        aiRequest: AiGroupingRequestPayload,
+        progress: RustCoreClient.ProgressHandler? = nil
+    ) throws -> CoreResponse {
+        try core.generateAiGrouping(store: store, storePath: storeURL, aiRequest: aiRequest, progress: progress)
+    }
+
     func revealOverridesFolder(store: Store, relativePath: String? = nil) {
         let root = URL(fileURLWithPath: store.overridesFolder, isDirectory: true)
         let cleanPath = sanitizedRelativePath(relativePath ?? "")
@@ -438,9 +537,11 @@ final class StoreController {
             enabled: false,
             provider: "openrouter",
             model: "",
+            models: [:],
             apiKey: "",
             apiKeys: [:],
             baseUrl: "",
+            aiGroupingPrompt: nil,
             cliPresetId: "codex-cli",
             cliPresets: []
         )
@@ -475,6 +576,8 @@ final class Bridge: NSObject, WKScriptMessageHandler {
     private let aiQueue = DispatchQueue(label: "mockkit.ai.generate", qos: .userInitiated)
     private weak var webView: WKWebView?
     private var store: Store
+    private var isSavingStore = false
+    private var pendingStorePayload: Any?
 
     override init() {
         store = storeController.load()
@@ -499,10 +602,14 @@ final class Bridge: NSObject, WKScriptMessageHandler {
             case "saveStore":
                 try saveStore(payload["store"])
             case "scan":
-                let result = try storeController.syncOverrides(store: &store)
+                var nextStore = store
+                let result = try storeController.syncOverrides(store: &nextStore)
+                store = nextStore
                 sendResult(message: "已同步：新增 \(result.imported.count) 个，更新 \(result.updated) 个。")
             case "syncFiles":
-                let result = try storeController.syncOverrides(store: &store)
+                var nextStore = store
+                let result = try storeController.syncOverrides(store: &nextStore)
+                store = nextStore
                 if !result.imported.isEmpty || result.updated > 0 {
                     sendState()
                 }
@@ -510,12 +617,16 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                 let written = try storeController.publish(store: store)
                 sendResult(message: "已发布 \(written.count) 个托管 Override 文件。")
             case "disable":
-                try storeController.disable(store: &store)
+                var nextStore = store
+                try storeController.disable(store: &nextStore)
+                store = nextStore
                 sendResult(message: "Mock 已禁用，托管文件已移除。")
             case "revealFolder":
                 storeController.revealOverridesFolder(store: store, relativePath: payload["path"] as? String)
             case "refreshChromeProfile":
-                try storeController.refreshChromeProfile(store: &store)
+                var nextStore = store
+                try storeController.refreshChromeProfile(store: &nextStore)
+                store = nextStore
                 sendResult(message: "已重新检测 Chrome Profile。")
             case "importCurl":
                 let curl = payload["curl"] as? String ?? ""
@@ -524,6 +635,12 @@ final class Bridge: NSObject, WKScriptMessageHandler {
             case "generateAiMock":
                 let request = payload["aiRequest"] as? [String: Any] ?? [:]
                 try startGenerateAiMock(request)
+            case "generateAiMetadata":
+                let request = payload["aiMetadataRequest"] as? [String: Any] ?? [:]
+                try startGenerateAiMetadata(request)
+            case "generateAiGrouping":
+                let request = payload["aiGroupingRequest"] as? [String: Any] ?? [:]
+                try startGenerateAiGrouping(request)
             case "installCli":
                 let result = try installMockKitCli()
                 let directory = URL(fileURLWithPath: result.path).deletingLastPathComponent().path
@@ -592,6 +709,105 @@ final class Bridge: NSObject, WKScriptMessageHandler {
         }
     }
 
+    private func startGenerateAiMetadata(_ rawRequest: [String: Any]) throws {
+        let data = try JSONSerialization.data(withJSONObject: rawRequest)
+        let aiRequest = try JSONDecoder().decode(AiMetadataRequestPayload.self, from: data)
+        let storeSnapshot = store
+        sendAiProgress(stage: "starting", message: "AI 命名已开始，正在建立流式连接...")
+        aiQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let backgroundStoreController = StoreController()
+                let result = try backgroundStoreController.generateAiMetadata(
+                    store: storeSnapshot,
+                    aiRequest: aiRequest,
+                    progress: { [weak self] payload in
+                        DispatchQueue.main.async {
+                            self?.sendAiProgress(payload)
+                        }
+                    }
+                )
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    if let nextStore = result.store {
+                        self.store = nextStore
+                    }
+                    var extra: [String: Any] = [:]
+                    if let preview = result.aiMetadataPreview {
+                        extra["aiMetadataPreview"] = self.dictionary(from: preview)
+                    }
+                    extra["aiProgress"] = [
+                        "stage": "complete",
+                        "message": "AI 已生成命名建议。"
+                    ]
+                    self.sendState(extra: extra)
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.sendState(
+                        error: error.localizedDescription,
+                        extra: [
+                            "aiProgress": [
+                                "stage": "error",
+                                "message": error.localizedDescription
+                            ],
+                            "aiMetadataEndpointId": aiRequest.endpoint.id
+                        ]
+                    )
+                }
+            }
+        }
+    }
+
+    private func startGenerateAiGrouping(_ rawRequest: [String: Any]) throws {
+        let data = try JSONSerialization.data(withJSONObject: rawRequest)
+        let aiRequest = try JSONDecoder().decode(AiGroupingRequestPayload.self, from: data)
+        let storeSnapshot = store
+        sendAiProgress(stage: "starting", message: "AI 自动分组已开始，正在建立流式连接...")
+        aiQueue.async { [weak self] in
+            guard let self else { return }
+            do {
+                let backgroundStoreController = StoreController()
+                let result = try backgroundStoreController.generateAiGrouping(
+                    store: storeSnapshot,
+                    aiRequest: aiRequest,
+                    progress: { [weak self] payload in
+                        DispatchQueue.main.async {
+                            self?.sendAiProgress(payload)
+                        }
+                    }
+                )
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    if let nextStore = result.store {
+                        self.store = nextStore
+                    }
+                    var extra: [String: Any] = [:]
+                    if let preview = result.aiGroupingPreview {
+                        extra["aiGroupingPreview"] = self.dictionary(from: preview)
+                    }
+                    extra["aiProgress"] = [
+                        "stage": "complete",
+                        "message": "AI 已生成分组建议。"
+                    ]
+                    self.sendState(message: "AI 已生成分组建议。", extra: extra)
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.sendState(
+                        error: error.localizedDescription,
+                        extra: [
+                            "aiProgress": [
+                                "stage": "error",
+                                "message": error.localizedDescription
+                            ]
+                        ]
+                    )
+                }
+            }
+        }
+    }
+
     private func sendAiProgress(stage: String, message: String) {
         sendAiProgress(AiProgressPayload(stage: stage, message: message, bytes: nil, content: nil))
     }
@@ -601,7 +817,9 @@ final class Bridge: NSObject, WKScriptMessageHandler {
     }
 
     private func importCurl(_ curl: String, fetchResponse: Bool) throws {
-        let result = try storeController.importCurl(store: &store, curl: curl, fetchResponse: fetchResponse)
+        var nextStore = store
+        let result = try storeController.importCurl(store: &nextStore, curl: curl, fetchResponse: fetchResponse)
+        store = nextStore
         let suffix = fetchResponse ? "，已保存响应场景。" : "。"
         sendState(
             message: "已导入 cURL\(suffix)",
@@ -613,26 +831,49 @@ final class Bridge: NSObject, WKScriptMessageHandler {
     }
 
     private func saveStore(_ rawStore: Any?) throws {
+        if isSavingStore {
+            pendingStorePayload = rawStore
+            return
+        }
+
+        isSavingStore = true
+        defer {
+            isSavingStore = false
+        }
+
+        var currentPayload = rawStore
+        while true {
+            try saveStoreNow(currentPayload)
+            guard let pendingPayload = pendingStorePayload else {
+                break
+            }
+            pendingStorePayload = nil
+            currentPayload = pendingPayload
+        }
+    }
+
+    private func saveStoreNow(_ rawStore: Any?) throws {
         let requestedAiEnabled = ((rawStore as? [String: Any])?["aiSettings"] as? [String: Any])?["enabled"] as? Bool
         let data = try JSONSerialization.data(withJSONObject: rawStore ?? [:])
-        store = try JSONDecoder().decode(Store.self, from: data)
-        if store.aiSettings == nil {
-            store.aiSettings = storeController.defaultAiSettings()
+        var nextStore = try JSONDecoder().decode(Store.self, from: data)
+        if nextStore.aiSettings == nil {
+            nextStore.aiSettings = storeController.defaultAiSettings()
         }
-        if store.uiSettings == nil {
-            store.uiSettings = storeController.defaultUiSettings()
+        if nextStore.uiSettings == nil {
+            nextStore.uiSettings = storeController.defaultUiSettings()
         }
-        if store.aiSettings?.enabled == nil {
-            store.aiSettings?.enabled = requestedAiEnabled ?? false
+        if nextStore.aiSettings?.enabled == nil {
+            nextStore.aiSettings?.enabled = requestedAiEnabled ?? false
         }
-        try storeController.saveNormalized(store: &store)
+        try storeController.saveNormalized(store: &nextStore)
         if let requestedAiEnabled {
-            if store.aiSettings == nil {
-                store.aiSettings = storeController.defaultAiSettings()
+            if nextStore.aiSettings == nil {
+                nextStore.aiSettings = storeController.defaultAiSettings()
             }
-            store.aiSettings?.enabled = requestedAiEnabled
+            nextStore.aiSettings?.enabled = requestedAiEnabled
         }
-        _ = try storeController.publish(store: store)
+        _ = try storeController.publish(store: nextStore)
+        store = nextStore
         sendState()
     }
 

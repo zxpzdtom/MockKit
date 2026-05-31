@@ -56,6 +56,10 @@ During development, run:
 ./target/debug/mockkit disable "example.com/api/users" --publish
 ./target/debug/mockkit disable --group "订单/列表" --publish
 ./target/debug/mockkit enable --matching "users" --publish
+./target/debug/mockkit edit "example.com/api/users" --name "用户列表" --description "分页返回用户。"
+./target/debug/mockkit case add "example.com/api/users" --name "空列表" --body-file ./empty-users.json --publish
+./target/debug/mockkit case update "example.com/api/users" "成功" --body-file ./users.json --publish
+./target/debug/mockkit case delete "example.com/api/users" "失败"
 ./target/debug/mockkit import-curl "curl 'https://example.com/api/users'"
 ./target/debug/mockkit use "example.com/api/users" "成功" --publish
 ```
@@ -75,6 +79,8 @@ mockkit show "example.com/api/users"
 mockkit publish
 mockkit disable "example.com/api/users" --publish
 mockkit enable --matching "users" --publish
+mockkit edit "example.com/api/users" --name "用户列表"
+mockkit case update "example.com/api/users" "成功" --body-file ./users.json --publish
 mockkit use "example.com/api/users" "成功" --publish
 ```
 
@@ -84,6 +90,7 @@ Useful options:
 ./target/debug/mockkit --json status
 ./target/debug/mockkit --store ./store.json --overrides ./overrides scan
 cat request.curl | ./target/debug/mockkit import-curl --fetch
+cat users.json | ./target/debug/mockkit case update "example.com/api/users" "成功" --body-stdin --publish
 ```
 
 By default, the CLI reads the same store as the app:

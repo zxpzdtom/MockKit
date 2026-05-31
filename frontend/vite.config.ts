@@ -19,12 +19,24 @@ export default defineConfig({
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
+    dedupe: [
+      "@codemirror/autocomplete",
+      "@codemirror/commands",
+      "@codemirror/lang-json",
+      "@codemirror/language",
+      "@codemirror/lint",
+      "@codemirror/search",
+      "@codemirror/state",
+      "@codemirror/view",
+      "codemirror",
+    ],
   },
   build: {
     outDir: "../Sources/ChromeOverridesManager/Resources",
     emptyOutDir: true,
     rollupOptions: {
       output: {
+        inlineDynamicImports: true,
         entryFileNames: "[name]-[hash].js",
         chunkFileNames: "[name]-[hash].js",
         assetFileNames: "[name]-[hash][extname]",
