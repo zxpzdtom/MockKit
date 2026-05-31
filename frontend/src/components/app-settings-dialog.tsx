@@ -9,6 +9,9 @@ import {
   dialogCloseButtonClass,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
@@ -17,17 +20,23 @@ import {
   Check,
   Clipboard,
   Download,
+  ExternalLink,
   Eye,
   EyeOff,
+  Github,
+  Globe2,
+  HardDrive,
   Info,
+  MessageCircle,
   Palette,
   Plus,
+  ShieldCheck,
   Terminal,
   Trash2,
   X,
 } from "lucide-react";
 import type React from "react";
-import type { AiCliPreset, AiProvider, AiSettings, AppTheme } from "../types";
+import type { AiCliPreset, AiProvider, AiSettings, AppLanguage, AppTheme } from "../types";
 
 const aiProviderLabels: Record<AiProvider, string> = {
   openrouter: "OpenRouter",
@@ -39,12 +48,22 @@ const aiProviderLabels: Record<AiProvider, string> = {
   "custom-cli": "自定义 CLI",
 };
 
-const apiProviderItems = (["openrouter", "openai", "gemini", "compatible"] as const).map((value) => ({
-  value: value as AiProvider,
-  label: aiProviderLabels[value],
-}));
+const aiProviderEnglishLabels: Record<AiProvider, string> = {
+  openrouter: "OpenRouter",
+  openai: "OpenAI",
+  gemini: "Gemini",
+  compatible: "OpenAI compatible",
+  "codex-cli": "Codex CLI",
+  "claude-cli": "Claude CLI",
+  "custom-cli": "Custom CLI",
+};
+const apiProviderValues = ["openrouter", "openai", "gemini", "compatible"] as const;
 const localCliProviders = new Set<AiProvider>(["codex-cli", "claude-cli", "custom-cli"]);
 const builtinCliPresetIds = new Set(["codex-cli", "claude-cli"]);
+const languageItems: Array<{ value: AppLanguage; label: string }> = [
+  { value: "zh-CN", label: "简体中文" },
+  { value: "en-US", label: "English" },
+];
 const themeItems: Array<{
   value: AppTheme;
   label: string;
@@ -113,26 +132,51 @@ const themeItems: Array<{
   },
 ];
 
+const themeDescriptions: Record<AppLanguage, Partial<Record<AppTheme, string>>> = {
+  "zh-CN": Object.fromEntries(themeItems.map((item) => [item.value, item.description])) as Partial<
+    Record<AppTheme, string>
+  >,
+  "en-US": {
+    mockkit: "The default native macOS utility look.",
+    claude: "Warm, restrained, and document-like.",
+    "kodama-grove": "A soft natural green palette.",
+    "soft-pop": "Bright, saturated, and lightweight.",
+    spotify: "Dark console styling with Spotify green.",
+    "modern-minimal": "Clean white surfaces with modern blue.",
+    "violet-bloom": "Soft whites with vivid violet accents.",
+    nature: "Paper-like light surfaces with natural green.",
+    "retro-arcade": "Retro arcade contrast in pink and blue.",
+    bubblegum: "Bubblegum pink with candy blue.",
+  },
+};
+
 const fieldClass = "grid gap-1.5 [&>span]:text-xs [&>span]:font-[560] [&>span]:text-[var(--muted)]";
 const inputClass =
   "h-[34px] w-full rounded-[10px] border border-[var(--border)] bg-[color-mix(in_srgb,var(--panel)_86%,var(--panel-2))] px-3 text-[13px] text-[var(--text)] shadow-[var(--control-shadow)]";
 const textareaClass =
   "min-h-[88px] w-full resize-none rounded-[10px] border border-[var(--border)] bg-[color-mix(in_srgb,var(--panel)_86%,var(--panel-2))] px-3 py-2 text-[13px] leading-5 text-[var(--text)] shadow-[var(--control-shadow)]";
 const settingsPanelClass =
-  "rounded-[11px] border border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel)_78%,var(--panel-2))] p-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.5)]";
+  "rounded-lg border border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel)_92%,var(--panel-2))] p-4 shadow-[0_1px_2px_rgba(15,23,42,0.035)]";
 const themeOptionClass =
-  "grid min-h-[78px] grid-cols-[auto_minmax(0,1fr)] items-center gap-3 rounded-[11px] border border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel)_82%,var(--panel-2))] p-3 text-left text-[var(--text)] transition-[background-color,border-color,box-shadow] duration-[120ms] hover:border-[color-mix(in_srgb,var(--accent)_24%,var(--border))] hover:bg-[color-mix(in_srgb,var(--panel)_72%,var(--panel-2))]";
+  "group relative grid min-h-[64px] grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel)_94%,var(--panel-2))] px-3 py-2.5 text-left text-[var(--text)] shadow-[0_1px_1px_rgba(15,23,42,0.025)] transition-[background-color,border-color,box-shadow,scale] duration-[140ms] hover:border-[color-mix(in_srgb,var(--accent)_24%,var(--border))] hover:bg-[color-mix(in_srgb,var(--panel)_98%,var(--panel-2))] active:scale-[0.99]";
 const activeThemeOptionClass =
-  "border-[color-mix(in_srgb,var(--accent)_42%,var(--border))] bg-[color-mix(in_srgb,var(--accent-soft)_42%,var(--panel))] shadow-[0_0_0_2px_color-mix(in_srgb,var(--accent)_10%,transparent)]";
+  "border-[color-mix(in_srgb,var(--accent)_45%,var(--border))] bg-[color-mix(in_srgb,var(--accent-soft)_24%,var(--panel))] shadow-[0_0_0_2px_color-mix(in_srgb,var(--accent)_8%,transparent),0_1px_2px_rgba(15,23,42,0.045)]";
 const optionButtonClass =
   "relative block min-h-[66px] rounded-[10px] border border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel)_72%,var(--panel-2))] p-3 text-left text-[var(--text)] transition-[background-color,border-color,box-shadow,scale] duration-[140ms] hover:border-[color-mix(in_srgb,var(--accent)_28%,var(--border))] hover:bg-[color-mix(in_srgb,var(--panel)_64%,var(--panel-2))] active:scale-[0.98]";
 const activeOptionButtonClass =
   "border-[color-mix(in_srgb,var(--accent)_46%,var(--border))] bg-[color-mix(in_srgb,var(--accent-soft)_46%,var(--panel))] shadow-[0_0_0_2px_color-mix(in_srgb,var(--accent)_10%,transparent)]";
-const cliCommands = [
+interface CliCommand {
+  command: string;
+  description: string;
+  params: Array<{ name: string; description: string }>;
+  example: string;
+}
+
+const cliCommandsZh: CliCommand[] = [
   {
     command: "mockkit status",
     description: "查看当前 Store、Overrides 文件夹、Mock 开关和端点数量。",
-    params: [] as Array<{ name: string; description: string }>,
+    params: [],
     example: "",
   },
   {
@@ -252,7 +296,274 @@ const cliCommands = [
     example: 'mockkit enable --matching "users" --publish',
   },
 ];
-type SettingsSection = "appearance" | "ai" | "cli";
+
+const cliCommandsEn: CliCommand[] = [
+  {
+    command: "mockkit status",
+    description: "Show the current store, Overrides folder, mock switch, and endpoint count.",
+    params: [],
+    example: "",
+  },
+  {
+    command: "mockkit list",
+    description: "List endpoint short IDs, enabled state, active case, and full path.",
+    params: [],
+    example: "",
+  },
+  {
+    command: "mockkit show <endpoint> [case]",
+    description: "Show one endpoint or case in full, useful when copying context to AI.",
+    params: [
+      { name: "<endpoint>", description: "Short ID, endpoint name, or path fragment from list" },
+      { name: "[case]", description: "Optional case name; omitted means the active case" },
+      { name: "--body", description: "Print only the response body" },
+    ],
+    example: 'mockkit show "example.com/api/users" "Success"',
+  },
+  {
+    command: "mockkit scan",
+    description: "Scan existing files from the Chrome Overrides folder into MockKit.",
+    params: [],
+    example: "",
+  },
+  {
+    command: "mockkit import-curl <curl>",
+    description: "Import a browser or proxy cURL command as a mock endpoint.",
+    params: [
+      { name: "<curl>", description: "Complete cURL text" },
+      { name: "--fetch", description: "Make the real request once and save the response" },
+    ],
+    example: "mockkit import-curl \"curl 'https://example.com/api/users'\"",
+  },
+  {
+    command: "mockkit use <endpoint> <case> [--publish]",
+    description: "Switch the active response case for an endpoint, optionally publishing immediately.",
+    params: [
+      { name: "<endpoint>", description: "Short ID, endpoint name, or path fragment from list" },
+      { name: "<case>", description: "Case name" },
+      { name: "--publish", description: "Publish after switching" },
+    ],
+    example: 'mockkit use "example.com/api/users" "Success" --publish',
+  },
+  {
+    command: "mockkit edit <endpoint> [options]",
+    description: "Edit endpoint title, description, path, method, group, or tags.",
+    params: [
+      { name: "<endpoint>", description: "Short ID, endpoint name, or path fragment from list" },
+      { name: "--name <text>", description: "Set endpoint title" },
+      { name: "--description <text>", description: "Set endpoint description" },
+      { name: "--publish", description: "Publish after saving" },
+    ],
+    example:
+      'mockkit edit "example.com/api/users" --name "User list" --description "Returns paginated users."',
+  },
+  {
+    command: "mockkit case add <endpoint> [options]",
+    description: "Add a response case to an endpoint; new cases become active by default.",
+    params: [
+      { name: "<endpoint>", description: "Short ID, endpoint name, or path fragment from list" },
+      { name: "--name <text>", description: "Case name" },
+      { name: "--body-file <path>", description: "Read response body from a file" },
+      { name: "--no-activate", description: "Do not switch to the new case" },
+      { name: "--publish", description: "Publish after saving" },
+    ],
+    example:
+      'mockkit case add "example.com/api/users" --name "Empty list" --body-file ./empty-users.json --publish',
+  },
+  {
+    command: "mockkit case update <endpoint> <case> [options]",
+    description: "Update a response case name, body, status code, or headers.",
+    params: [
+      { name: "<endpoint>", description: "Short ID, endpoint name, or path fragment from list" },
+      { name: "<case>", description: "Case name or ID" },
+      { name: "--body <text>", description: "Set response body directly" },
+      { name: "--body-file <path>", description: "Read response body from a file" },
+      { name: "--body-stdin", description: "Read response body from stdin" },
+      { name: "--activate", description: "Switch to this case after updating" },
+      { name: "--publish", description: "Publish after saving" },
+    ],
+    example: 'mockkit case update "example.com/api/users" "Success" --body-file ./users.json --publish',
+  },
+  {
+    command: "mockkit case delete <endpoint> <case> [--publish]",
+    description: "Delete a response case; each endpoint keeps at least one case.",
+    params: [
+      { name: "<endpoint>", description: "Short ID, endpoint name, or path fragment from list" },
+      { name: "<case>", description: "Case name or ID" },
+      { name: "--publish", description: "Publish after deleting" },
+    ],
+    example: 'mockkit case delete "example.com/api/users" "Failure" --publish',
+  },
+  {
+    command: "mockkit disable <endpoint...> [--publish]",
+    description: "Disable one or more endpoints; without arguments, mockkit disable turns off all mocks.",
+    params: [
+      { name: "<endpoint...>", description: "One or more short IDs, endpoint names, or path fragments" },
+      { name: "--publish", description: "Publish after disabling" },
+    ],
+    example: 'mockkit disable "example.com/api/users" --publish',
+  },
+  {
+    command: "mockkit disable --group <path> [--publish]",
+    description: "Disable endpoints by group, including nested subgroups.",
+    params: [
+      { name: "--group <path>", description: "Group path" },
+      { name: "--publish", description: "Publish after disabling" },
+    ],
+    example: 'mockkit disable --group "Orders/List" --publish',
+  },
+  {
+    command: "mockkit enable --matching <text> [--publish]",
+    description: "Enable endpoints that match by name, path, group, or tag.",
+    params: [
+      { name: "--matching <text>", description: "Text used to match endpoints" },
+      { name: "--publish", description: "Publish after enabling" },
+    ],
+    example: 'mockkit enable --matching "users" --publish',
+  },
+];
+
+const settingsCopy = {
+  "zh-CN": {
+    title: "设置",
+    description: "配置主题、语言、AI 生成和本机偏好。",
+    closeSettings: "关闭设置",
+    appearance: "外观",
+    ai: "AI 生成",
+    cli: "命令行",
+    about: "关于",
+    appearanceDescription: "主题来自 tweakcn 的 shadcn token，并映射到 MockKit 的界面变量。",
+    languageTitle: "语言",
+    languageDescription: "切换 MockKit 的界面语言。设置会保存在本机配置中。",
+    cliDescription: "把 MockKit 的扫描、导入、切换场景和发布能力带到终端、脚本和 CI 流程里。",
+    installCliDescription: "安装后会在终端提供全局命令，默认读取和 App 相同的本机配置。",
+    installCli: "一键安装 CLI",
+    installLocation: "安装位置",
+    installLocationDescription: "会安装到当前终端可直接识别的位置；需要时会弹出 macOS 管理员授权。",
+    commonCommands: "常用命令",
+    commonCommandsDescription: "复制后可直接在终端里运行。",
+    copyAll: "复制全部",
+    copyTemplate: "复制命令模板",
+    copyExample: "复制示例",
+    example: "示例",
+    aiDescription: "配置用于生成 Mock 数据的模型。",
+    enableAi: "启用 AI 功能",
+    enableAiDescription: "开启后显示 AI 生成相关按钮。",
+    localCli: "本地 CLI",
+    localCliDescription: "使用本机已登录的命令行工具生成；模型留空时使用 CLI 默认模型。",
+    localSave: "本地保存",
+    localSaveDescription: "API Key 仅保存在本机应用数据中，不会随配置文件导入或导出。",
+    runMode: "运行方式",
+    cloudApi: "云端 API",
+    cloudApiDescription: "使用 OpenRouter、OpenAI、Gemini 或兼容接口。",
+    localCliModeDescription: "复用本机已登录的命令行工具。",
+    provider: "服务商",
+    model: "模型",
+    cliPreset: "CLI 预设",
+    cliPresetDescription: "选择要调用的命令模板，然后在右侧调整名称和命令。",
+    addPreset: "新增预设",
+    name: "名称",
+    command: "命令",
+    cliModelPlaceholder: "可留空，使用 CLI 默认模型",
+    cliCommandPlaceholder: "claude -p --output-format stream-json --verbose {prompt}",
+    cliCommandHelp:
+      "支持 {prompt}、{model} 和 Codex 专用 {output} 占位符；没有 {prompt} 时会把 prompt 写入 stdin。",
+    deletePreset: "删除预设",
+    apiKeyPlaceholder: "sk-...，多个 Key 用逗号分隔",
+    keyCount: (count: number) => `${count} 个 Key`,
+    hideApiKey: "隐藏 API Key",
+    showApiKey: "查看 API Key",
+    groupingPromptTitle: "AI 分组 Prompt",
+    groupingPromptDescription: "用于控制业务分组的命名和归类偏好。",
+    restoreDefault: "恢复默认",
+    prompt: "提示词",
+    groupingPromptPlaceholder: "输入 AI 分组 Prompt",
+    aboutDescription: "MockKit 是一个面向 Chrome Local Overrides 的本机 Mock 工作台。",
+    version: "版本",
+    sourceCode: "开源地址",
+    feedback: "问题反馈",
+    license: "许可证",
+    localFirst: "本地优先",
+    localFirstDescription: "接口、场景和 API Key 默认只保存在本机应用数据中。",
+    chromeOverrides: "Chrome Overrides",
+    chromeOverridesDescription: "MockKit 直接管理 Overrides 文件夹，并用 manifest 避免误删非托管文件。",
+    openGitHub: "打开 GitHub",
+    reportIssue: "提交 Issue",
+  },
+  "en-US": {
+    title: "Settings",
+    description: "Configure theme, language, AI generation, and local preferences.",
+    closeSettings: "Close settings",
+    appearance: "Appearance",
+    ai: "AI Generation",
+    cli: "Command Line",
+    about: "About",
+    appearanceDescription: "Themes come from tweakcn shadcn tokens and map into MockKit UI variables.",
+    languageTitle: "Language",
+    languageDescription: "Switch MockKit's interface language. The preference is saved locally.",
+    cliDescription:
+      "Bring MockKit scanning, importing, case switching, and publishing into terminals, scripts, and CI.",
+    installCliDescription:
+      "After installation, a global terminal command reads the same local config as the app.",
+    installCli: "Install CLI",
+    installLocation: "Install Location",
+    installLocationDescription:
+      "Installs somewhere your terminal can find it; macOS admin approval may be requested.",
+    commonCommands: "Common Commands",
+    commonCommandsDescription: "Copy and run these directly in your terminal.",
+    copyAll: "Copy All",
+    copyTemplate: "Copy command template",
+    copyExample: "Copy example",
+    example: "Example",
+    aiDescription: "Configure the model used to generate mock data.",
+    enableAi: "Enable AI",
+    enableAiDescription: "Shows AI generation actions when enabled.",
+    localCli: "Local CLI",
+    localCliDescription:
+      "Generate through a locally signed-in CLI; leave model blank to use the CLI default.",
+    localSave: "Local Storage",
+    localSaveDescription:
+      "API keys are saved only in local app data and are not imported or exported with configs.",
+    runMode: "Run Mode",
+    cloudApi: "Cloud API",
+    cloudApiDescription: "Use OpenRouter, OpenAI, Gemini, or a compatible endpoint.",
+    localCliModeDescription: "Reuse a locally signed-in command-line tool.",
+    provider: "Provider",
+    model: "Model",
+    cliPreset: "CLI Presets",
+    cliPresetDescription: "Choose the command template to run, then edit its name and command on the right.",
+    addPreset: "Add Preset",
+    name: "Name",
+    command: "Command",
+    cliModelPlaceholder: "Optional; uses the CLI default model",
+    cliCommandPlaceholder: "claude -p --output-format stream-json --verbose {prompt}",
+    cliCommandHelp:
+      "Supports {prompt}, {model}, and the Codex-only {output} placeholder; without {prompt}, the prompt is written to stdin.",
+    deletePreset: "Delete Preset",
+    apiKeyPlaceholder: "sk-..., separate multiple keys with commas",
+    keyCount: (count: number) => `${count} keys`,
+    hideApiKey: "Hide API key",
+    showApiKey: "Show API key",
+    groupingPromptTitle: "AI Grouping Prompt",
+    groupingPromptDescription: "Controls naming and categorization preferences for business groups.",
+    restoreDefault: "Restore Default",
+    prompt: "Prompt",
+    groupingPromptPlaceholder: "Enter the AI grouping prompt",
+    aboutDescription: "MockKit is a native mock workspace for Chrome Local Overrides.",
+    version: "Version",
+    sourceCode: "Source Code",
+    feedback: "Feedback",
+    license: "License",
+    localFirst: "Local First",
+    localFirstDescription: "Endpoints, cases, and API keys are saved only in local app data by default.",
+    chromeOverrides: "Chrome Overrides",
+    chromeOverridesDescription:
+      "MockKit manages the Overrides folder directly and uses a manifest to avoid deleting unmanaged files.",
+    openGitHub: "Open GitHub",
+    reportIssue: "Report Issue",
+  },
+};
+type SettingsSection = "appearance" | "ai" | "cli" | "about";
 
 function inferCliStreamMode(command: string): AiCliPreset["streamMode"] {
   const normalizedCommand = command.toLowerCase();
@@ -263,43 +574,65 @@ function inferCliStreamMode(command: string): AiCliPreset["streamMode"] {
 
 interface AppSettingsDialogProps {
   aiGroupingDefaultPrompt: string;
+  aiGroupingDefaultPromptAliases: string[];
   aiApiKeyCount: number;
   aiApiKeyVisible: boolean;
   aiEnabled: boolean;
   aiSettings: AiSettings;
+  appVersion: string;
+  githubUrl: string;
+  issuesUrl: string;
   onApiKeyVisibleChange(value: boolean | ((visible: boolean) => boolean)): void;
   onCopyText(text: string): void;
   onInstallCli(): void;
+  onLanguageChange(language: AppLanguage): void;
+  onOpenExternal(url: string): void;
   onOpenChange(open: boolean): void;
   onSectionChange(section: SettingsSection): void;
   onThemeChange(theme: AppTheme): void;
   onUpdateSettings(patch: Partial<AiSettings>): void;
   open: boolean;
   section: SettingsSection;
+  language: AppLanguage;
   theme: AppTheme;
 }
 
 export function AppSettingsDialog({
   aiGroupingDefaultPrompt,
+  aiGroupingDefaultPromptAliases,
   aiApiKeyCount,
   aiApiKeyVisible,
   aiEnabled,
   aiSettings,
+  appVersion,
+  githubUrl,
+  issuesUrl,
   onApiKeyVisibleChange,
   onCopyText,
   onInstallCli,
+  onLanguageChange,
+  onOpenExternal,
   onOpenChange,
   onSectionChange,
   onThemeChange,
   onUpdateSettings,
   open,
   section,
+  language,
   theme,
 }: AppSettingsDialogProps) {
+  const copy = settingsCopy[language];
+  const providerLabels = language === "en-US" ? aiProviderEnglishLabels : aiProviderLabels;
+  const apiProviderItems = apiProviderValues.map((value) => ({
+    value: value as AiProvider,
+    label: providerLabels[value],
+  }));
+  const cliCommands = language === "en-US" ? cliCommandsEn : cliCommandsZh;
   const localCliProvider = localCliProviders.has(aiSettings.provider);
-  const aiGroupingPrompt = aiSettings.aiGroupingPrompt?.trim()
-    ? aiSettings.aiGroupingPrompt
-    : aiGroupingDefaultPrompt;
+  const storedAiGroupingPrompt = aiSettings.aiGroupingPrompt;
+  const usesDefaultAiGroupingPrompt =
+    storedAiGroupingPrompt == null || aiGroupingDefaultPromptAliases.includes(storedAiGroupingPrompt.trim());
+  const aiGroupingPrompt = usesDefaultAiGroupingPrompt ? aiGroupingDefaultPrompt : storedAiGroupingPrompt;
   const cliPresets = aiSettings.cliPresets ?? [];
   const activeCliPreset =
     cliPresets.find((preset) => preset.id === aiSettings.cliPresetId) ??
@@ -336,7 +669,7 @@ export function AppSettingsDialog({
     const id = `custom-cli-${Date.now().toString(36)}`;
     const preset: AiCliPreset = {
       id,
-      name: "自定义 CLI",
+      name: providerLabels["custom-cli"],
       model: "",
       command: "your-command {prompt}",
       streamMode: inferCliStreamMode("your-command {prompt}"),
@@ -373,11 +706,11 @@ export function AppSettingsDialog({
       >
         <DialogHeader className="col-span-2 flex min-h-[66px] flex-row items-start justify-between border-b border-[var(--border-soft)] bg-[linear-gradient(180deg,var(--panel),color-mix(in_srgb,var(--panel-2)_22%,var(--panel)))] px-5 py-4">
           <div>
-            <DialogTitle>设置</DialogTitle>
-            <DialogDescription>配置主题、AI 生成和本机偏好。</DialogDescription>
+            <DialogTitle>{copy.title}</DialogTitle>
+            <DialogDescription>{copy.description}</DialogDescription>
           </div>
           <Button
-            aria-label="关闭设置"
+            aria-label={copy.closeSettings}
             className={dialogCloseButtonClass}
             size="icon-sm"
             type="button"
@@ -392,31 +725,75 @@ export function AppSettingsDialog({
           <SettingsNavItem
             active={section === "appearance"}
             icon={<Palette size={15} />}
-            label="外观"
+            label={copy.appearance}
             onClick={() => onSectionChange("appearance")}
           />
           <SettingsNavItem
             active={section === "ai"}
             icon={<Bot size={15} />}
-            label="AI 生成"
+            label={copy.ai}
             onClick={() => onSectionChange("ai")}
           />
           <SettingsNavItem
             active={section === "cli"}
             icon={<Terminal size={15} />}
-            label="命令行"
+            label={copy.cli}
             onClick={() => onSectionChange("cli")}
+          />
+          <SettingsNavItem
+            active={section === "about"}
+            icon={<Info size={15} />}
+            label={copy.about}
+            onClick={() => onSectionChange("about")}
           />
         </aside>
 
         <div className="scroll-mask-y-direct-4 min-h-0 overflow-auto p-6">
           {section === "appearance" ? (
-            <section className="grid max-w-[680px] gap-5">
-              <SettingsSectionHeader
-                title="外观"
-                description="主题来自 tweakcn 的 shadcn token，并映射到 MockKit 的界面变量。"
-              />
-              <div className="grid grid-cols-[repeat(auto-fit,minmax(220px,1fr))] gap-3">
+            <section className="grid max-w-[760px] gap-5">
+              <SettingsSectionHeader title={copy.appearance} description={copy.appearanceDescription} />
+              <div className={cn(settingsPanelClass, "grid gap-4")}>
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_220px] sm:items-center">
+                  <div className="flex min-w-0 items-start gap-2.5">
+                    <Globe2 className="mt-0.5 text-[var(--muted)]" size={15} />
+                    <div className="min-w-0">
+                      <Label
+                        className="text-[13px] font-[660] leading-5 text-[var(--text)]"
+                        htmlFor="settings-language"
+                      >
+                        {copy.languageTitle}
+                      </Label>
+                      <p className="mt-0.5 text-xs leading-5 text-[var(--muted)]">
+                        {copy.languageDescription}
+                      </p>
+                    </div>
+                  </div>
+                  <Select value={language} onValueChange={(value) => onLanguageChange(value as AppLanguage)}>
+                    <SelectTrigger
+                      id="settings-language"
+                      className="h-9 w-full justify-between rounded-md border-[var(--border)] bg-[color-mix(in_srgb,var(--panel)_98%,white)] px-3 text-[13px] font-[560] text-[var(--text)] shadow-[var(--control-shadow)]"
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent
+                      position="popper"
+                      className="z-[80] min-w-[var(--radix-select-trigger-width)] border border-[var(--border)] bg-[color-mix(in_srgb,var(--panel)_98%,white)] p-1 text-[var(--text)] shadow-[0_12px_28px_rgba(15,23,42,0.16),0_2px_6px_rgba(15,23,42,0.10)]"
+                    >
+                      {languageItems.map((item) => (
+                        <SelectItem
+                          className="h-8 rounded-md text-[13px]"
+                          key={item.value}
+                          value={item.value}
+                        >
+                          {item.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <Separator className="bg-[var(--border-soft)]" />
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(240px,1fr))] gap-2.5">
                 {themeItems.map((item) => (
                   <button
                     className={cn(themeOptionClass, theme === item.value && activeThemeOptionClass)}
@@ -425,7 +802,7 @@ export function AppSettingsDialog({
                     onClick={() => onThemeChange(item.value)}
                   >
                     <span
-                      className="inline-grid h-[34px] grid-cols-[repeat(3,18px)] overflow-hidden rounded-lg border border-[var(--border-soft)]"
+                      className="inline-grid h-8 grid-cols-[repeat(3,16px)] overflow-hidden rounded-md border border-[var(--border-soft)] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.32)]"
                       aria-hidden="true"
                     >
                       {item.swatches.map((swatch) => (
@@ -435,11 +812,20 @@ export function AppSettingsDialog({
                     <span className="min-w-0">
                       <span className="flex items-center justify-between gap-2 text-[13px] font-[680]">
                         {item.label}
-                        {theme === item.value ? <Check size={14} /> : null}
                       </span>
                       <span className="mt-[3px] block text-xs leading-[1.35] text-[var(--muted)]">
-                        {item.description}
+                        {themeDescriptions[language][item.value] ?? item.description}
                       </span>
+                    </span>
+                    <span
+                      className={cn(
+                        "grid size-5 place-items-center rounded-full border border-[var(--border-soft)] text-transparent transition-[background-color,border-color,color,scale] duration-[140ms]",
+                        theme === item.value &&
+                          "border-[color-mix(in_srgb,var(--accent)_48%,var(--border))] bg-[var(--accent)] text-[var(--accent-foreground)] shadow-[0_1px_2px_rgba(15,23,42,0.12)]",
+                      )}
+                      aria-hidden="true"
+                    >
+                      <Check size={12} />
                     </span>
                   </button>
                 ))}
@@ -447,10 +833,7 @@ export function AppSettingsDialog({
             </section>
           ) : section === "cli" ? (
             <section className="grid max-w-[720px] gap-5">
-              <SettingsSectionHeader
-                title="命令行"
-                description="把 MockKit 的扫描、导入、切换场景和发布能力带到终端、脚本和 CI 流程里。"
-              />
+              <SettingsSectionHeader title={copy.cli} description={copy.cliDescription} />
               <div className={cn(settingsPanelClass, "grid gap-4")}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="min-w-0">
@@ -459,28 +842,26 @@ export function AppSettingsDialog({
                       mockkit
                     </div>
                     <p className="mt-1 max-w-[520px] text-xs leading-5 text-[var(--muted)]">
-                      安装后会在终端提供全局命令，默认读取和 App 相同的本机配置。
+                      {copy.installCliDescription}
                     </p>
                   </div>
                   <Button type="button" onClick={onInstallCli}>
-                    <Download size={14} /> 一键安装 CLI
+                    <Download size={14} /> {copy.installCli}
                   </Button>
                 </div>
                 <Alert variant="warning">
                   <div className="flex items-center gap-[7px]">
                     <Info className="text-[var(--warning)]" size={14} />
-                    <AlertTitle>安装位置</AlertTitle>
+                    <AlertTitle>{copy.installLocation}</AlertTitle>
                   </div>
-                  <AlertDescription>
-                    会安装到当前终端可直接识别的位置；需要时会弹出 macOS 管理员授权。
-                  </AlertDescription>
+                  <AlertDescription>{copy.installLocationDescription}</AlertDescription>
                 </Alert>
               </div>
               <div className={cn(settingsPanelClass, "grid gap-3")}>
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-[13px] font-[660] text-[var(--text)]">常用命令</div>
-                    <div className="mt-0.5 text-xs text-[var(--muted)]">复制后可直接在终端里运行。</div>
+                    <div className="text-[13px] font-[660] text-[var(--text)]">{copy.commonCommands}</div>
+                    <div className="mt-0.5 text-xs text-[var(--muted)]">{copy.commonCommandsDescription}</div>
                   </div>
                   <Button
                     size="sm"
@@ -490,7 +871,7 @@ export function AppSettingsDialog({
                       onCopyText(cliCommands.map((item) => item.example || item.command).join("\n"))
                     }
                   >
-                    <Clipboard size={13} /> 复制全部
+                    <Clipboard size={13} /> {copy.copyAll}
                   </Button>
                 </div>
                 <div className="grid gap-2">
@@ -509,7 +890,7 @@ export function AppSettingsDialog({
                             <p className="mt-1 text-xs leading-5 text-[var(--muted)]">{item.description}</p>
                           </div>
                           <Button
-                            aria-label={`复制命令模板 ${item.command}`}
+                            aria-label={`${copy.copyTemplate} ${item.command}`}
                             className="size-7 rounded-[8px]"
                             size="icon-sm"
                             type="button"
@@ -537,14 +918,14 @@ export function AppSettingsDialog({
                         {showExample ? (
                           <div className="rounded-[9px] border border-[color-mix(in_srgb,var(--border)_76%,transparent)] bg-[color-mix(in_srgb,var(--panel-3)_58%,var(--panel))] p-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.44)]">
                             <div className="mb-1.5 text-[11px] font-[650] leading-4 text-[var(--faint)]">
-                              示例
+                              {copy.example}
                             </div>
                             <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-[7px] bg-[color-mix(in_srgb,var(--bg)_72%,var(--panel))] px-2.5 py-2">
                               <code className="block min-w-0 overflow-x-auto whitespace-nowrap text-[12px] leading-5 text-[var(--text)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                                 {item.example}
                               </code>
                               <Button
-                                aria-label={`复制示例 ${item.example}`}
+                                aria-label={`${copy.copyExample} ${item.example}`}
                                 className="size-6 rounded-[7px]"
                                 size="icon-xs"
                                 type="button"
@@ -562,17 +943,65 @@ export function AppSettingsDialog({
                 </div>
               </div>
             </section>
+          ) : section === "about" ? (
+            <section className="grid max-w-[720px] gap-5">
+              <SettingsSectionHeader title={copy.about} description={copy.aboutDescription} />
+              <div className="grid gap-4 rounded-lg bg-[color-mix(in_srgb,var(--panel)_88%,var(--panel-2))] p-4 shadow-[0_1px_2px_rgba(15,23,42,0.035),inset_0_0_0_1px_var(--border-soft)]">
+                <div className="flex min-w-0 items-center gap-4">
+                  <img
+                    alt="MockKit"
+                    className="size-16 rounded-[14px] shadow-[0_8px_22px_rgba(15,23,42,0.14),0_0_0_1px_rgba(0,0,0,0.10)]"
+                    src="./app-icon.png"
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[21px] font-[760] leading-tight text-[var(--text)]">MockKit</div>
+                    <div className="mt-1 text-[13px] tabular-nums text-[var(--muted)]">
+                      {copy.version} {appVersion}
+                    </div>
+                  </div>
+                </div>
+                <div className="grid gap-2">
+                  <AboutLink
+                    href={githubUrl}
+                    icon={<Github size={14} />}
+                    label={copy.sourceCode}
+                    action={copy.openGitHub}
+                    onOpenExternal={onOpenExternal}
+                  />
+                  <AboutLink
+                    href={issuesUrl}
+                    icon={<MessageCircle size={14} />}
+                    label={copy.feedback}
+                    action={copy.reportIssue}
+                    onOpenExternal={onOpenExternal}
+                  />
+                  <AboutInfoRow icon={<ShieldCheck size={14} />} title={copy.license} value="MIT" />
+                </div>
+              </div>
+              <div className="grid gap-2">
+                <AboutInfoCard
+                  icon={<HardDrive size={15} />}
+                  title={copy.localFirst}
+                  description={copy.localFirstDescription}
+                />
+                <AboutInfoCard
+                  icon={<Info size={15} />}
+                  title={copy.chromeOverrides}
+                  description={copy.chromeOverridesDescription}
+                />
+              </div>
+            </section>
           ) : (
             <section className="grid max-w-[680px] gap-5">
-              <SettingsSectionHeader title="AI 生成" description="配置用于生成 Mock 数据的模型。" />
+              <SettingsSectionHeader title={copy.ai} description={copy.aiDescription} />
               <div className={settingsPanelClass}>
                 <div className="flex min-h-[46px] items-center justify-between gap-3.5">
                   <div>
-                    <div className="text-[13px] font-[660] text-[var(--text)]">启用 AI 功能</div>
-                    <div className="mt-0.5 text-xs text-[var(--muted)]">开启后显示 AI 生成相关按钮。</div>
+                    <div className="text-[13px] font-[660] text-[var(--text)]">{copy.enableAi}</div>
+                    <div className="mt-0.5 text-xs text-[var(--muted)]">{copy.enableAiDescription}</div>
                   </div>
                   <Switch
-                    aria-label="启用 AI 功能"
+                    aria-label={copy.enableAi}
                     checked={aiEnabled}
                     onCheckedChange={(enabled) => onUpdateSettings({ enabled })}
                   />
@@ -582,26 +1011,22 @@ export function AppSettingsDialog({
                 <Alert variant="warning">
                   <div className="flex items-center gap-[7px]">
                     <Info className="text-[var(--warning)]" size={14} />
-                    <AlertTitle>本地 CLI</AlertTitle>
+                    <AlertTitle>{copy.localCli}</AlertTitle>
                   </div>
-                  <AlertDescription>
-                    使用本机已登录的命令行工具生成；模型留空时使用 CLI 默认模型。
-                  </AlertDescription>
+                  <AlertDescription>{copy.localCliDescription}</AlertDescription>
                 </Alert>
               ) : (
                 <Alert variant="warning">
                   <div className="flex items-center gap-[7px]">
                     <Info className="text-[var(--warning)]" size={14} />
-                    <AlertTitle>本地保存</AlertTitle>
+                    <AlertTitle>{copy.localSave}</AlertTitle>
                   </div>
-                  <AlertDescription>
-                    API Key 仅保存在本机应用数据中，不会随配置文件导入或导出。
-                  </AlertDescription>
+                  <AlertDescription>{copy.localSaveDescription}</AlertDescription>
                 </Alert>
               )}
               <div className={cn(settingsPanelClass, "grid gap-4")}>
                 <div className="grid gap-2">
-                  <div className="text-xs font-[560] text-[var(--muted)]">运行方式</div>
+                  <div className="text-xs font-[560] text-[var(--muted)]">{copy.runMode}</div>
                   <div className="grid grid-cols-2 gap-2.5">
                     <button
                       className={cn(optionButtonClass, !localCliProvider && activeOptionButtonClass)}
@@ -609,9 +1034,9 @@ export function AppSettingsDialog({
                       onClick={() => onUpdateSettings({ provider: "openrouter" })}
                     >
                       <span className="min-w-0">
-                        <span className="block text-[13px] font-[680]">云端 API</span>
+                        <span className="block text-[13px] font-[680]">{copy.cloudApi}</span>
                         <span className="mt-1 block text-xs leading-[1.45] text-[var(--muted)]">
-                          使用 OpenRouter、OpenAI、Gemini 或兼容接口。
+                          {copy.cloudApiDescription}
                         </span>
                       </span>
                       {!localCliProvider ? (
@@ -624,9 +1049,9 @@ export function AppSettingsDialog({
                       onClick={activateLocalCli}
                     >
                       <span className="min-w-0">
-                        <span className="block text-[13px] font-[680]">本地 CLI</span>
+                        <span className="block text-[13px] font-[680]">{copy.localCli}</span>
                         <span className="mt-1 block text-xs leading-[1.45] text-[var(--muted)]">
-                          复用本机已登录的命令行工具。
+                          {copy.localCliModeDescription}
                         </span>
                       </span>
                       {localCliProvider ? (
@@ -637,7 +1062,7 @@ export function AppSettingsDialog({
                 </div>
                 {localCliProvider ? null : (
                   <div className="grid gap-2">
-                    <div className="text-xs font-[560] text-[var(--muted)]">服务商</div>
+                    <div className="text-xs font-[560] text-[var(--muted)]">{copy.provider}</div>
                     <div className="grid grid-cols-[repeat(auto-fit,minmax(132px,1fr))] gap-2">
                       {apiProviderItems.map((item) => (
                         <button
@@ -663,7 +1088,7 @@ export function AppSettingsDialog({
                 )}
                 {localCliProvider ? null : (
                   <label className={fieldClass} htmlFor="settings-ai-model">
-                    <span>模型</span>
+                    <span>{copy.model}</span>
                     <Input
                       id="settings-ai-model"
                       className={inputClass}
@@ -695,13 +1120,11 @@ export function AppSettingsDialog({
                   <div className="grid gap-3 rounded-[10px] border border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel)_68%,var(--panel-2))] p-3">
                     <div className="flex items-center justify-between gap-2">
                       <div>
-                        <div className="text-[13px] font-[660] text-[var(--text)]">CLI 预设</div>
-                        <div className="mt-0.5 text-xs text-[var(--muted)]">
-                          选择要调用的命令模板，然后在右侧调整名称和命令。
-                        </div>
+                        <div className="text-[13px] font-[660] text-[var(--text)]">{copy.cliPreset}</div>
+                        <div className="mt-0.5 text-xs text-[var(--muted)]">{copy.cliPresetDescription}</div>
                       </div>
                       <Button size="sm" type="button" variant="secondary" onClick={addCliPreset}>
-                        <Plus size={13} /> 新增预设
+                        <Plus size={13} /> {copy.addPreset}
                       </Button>
                     </div>
                     <div className="grid gap-3 md:grid-cols-[190px_minmax(0,1fr)]">
@@ -734,7 +1157,7 @@ export function AppSettingsDialog({
                         {activeCliPreset ? (
                           <>
                             <label className={fieldClass} htmlFor="settings-cli-preset-name">
-                              <span>名称</span>
+                              <span>{copy.name}</span>
                               <Input
                                 id="settings-cli-preset-name"
                                 className={inputClass}
@@ -743,22 +1166,22 @@ export function AppSettingsDialog({
                               />
                             </label>
                             <label className={fieldClass} htmlFor="settings-cli-preset-model">
-                              <span>模型</span>
+                              <span>{copy.model}</span>
                               <Input
                                 id="settings-cli-preset-model"
                                 className={inputClass}
                                 value={activeCliPreset.model ?? ""}
-                                placeholder="可留空，使用 CLI 默认模型"
+                                placeholder={copy.cliModelPlaceholder}
                                 onChange={(event) => updateActiveCliPreset({ model: event.target.value })}
                               />
                             </label>
                             <label className={fieldClass} htmlFor="settings-cli-preset-command">
-                              <span>命令</span>
+                              <span>{copy.command}</span>
                               <Textarea
                                 id="settings-cli-preset-command"
                                 className={textareaClass}
                                 value={activeCliPreset.command}
-                                placeholder="claude -p --output-format stream-json --verbose {prompt}"
+                                placeholder={copy.cliCommandPlaceholder}
                                 onChange={(event) =>
                                   updateActiveCliPreset({
                                     command: event.target.value,
@@ -767,8 +1190,7 @@ export function AppSettingsDialog({
                                 }
                               />
                               <span className="text-[11px] leading-[1.45] text-[var(--faint)]">
-                                支持 {"{prompt}"}、{"{model}"} 和 Codex 专用 {"{output}"} 占位符；没有{" "}
-                                {"{prompt}"} 时会把 prompt 写入 stdin。
+                                {copy.cliCommandHelp}
                               </span>
                             </label>
                             {!builtinCliPresetIds.has(activeCliPreset.id) ? (
@@ -778,7 +1200,7 @@ export function AppSettingsDialog({
                                 variant="ghost"
                                 onClick={deleteActiveCliPreset}
                               >
-                                <Trash2 size={13} /> 删除预设
+                                <Trash2 size={13} /> {copy.deletePreset}
                               </Button>
                             ) : null}
                           </>
@@ -796,17 +1218,17 @@ export function AppSettingsDialog({
                         className={cn(inputClass, "pr-[118px]")}
                         value={aiSettings.apiKey}
                         type={aiApiKeyVisible ? "text" : "password"}
-                        placeholder="sk-...，多个 Key 用逗号分隔"
+                        placeholder={copy.apiKeyPlaceholder}
                         onChange={(event) => onUpdateSettings({ apiKey: event.target.value })}
                       />
                       <div className="absolute right-1.5 top-1/2 inline-flex -translate-y-1/2 items-center gap-[5px]">
                         {aiApiKeyCount > 1 ? (
                           <span className="max-w-[68px] whitespace-nowrap rounded-full bg-[var(--accent-soft)] px-[7px] py-0.5 text-[11px] font-[620] leading-4 text-[var(--accent)]">
-                            {aiApiKeyCount} 个 Key
+                            {copy.keyCount(aiApiKeyCount)}
                           </span>
                         ) : null}
                         <Button
-                          aria-label={aiApiKeyVisible ? "隐藏 API Key" : "查看 API Key"}
+                          aria-label={aiApiKeyVisible ? copy.hideApiKey : copy.showApiKey}
                           className="grid size-6 place-items-center rounded-[7px] border-0 bg-transparent p-0 text-[var(--muted)] hover:bg-[color-mix(in_srgb,var(--panel-3)_78%,transparent)] hover:text-[var(--text)]"
                           size="icon-xs"
                           type="button"
@@ -823,28 +1245,30 @@ export function AppSettingsDialog({
               <div className={cn(settingsPanelClass, "grid gap-3")}>
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="text-[13px] font-[660] text-[var(--text)]">AI 分组 Prompt</div>
+                    <div className="text-[13px] font-[660] text-[var(--text)]">
+                      {copy.groupingPromptTitle}
+                    </div>
                     <div className="mt-0.5 text-xs leading-5 text-[var(--muted)]">
-                      用于控制业务分组的命名和归类偏好。
+                      {copy.groupingPromptDescription}
                     </div>
                   </div>
                   <Button
                     size="sm"
                     type="button"
                     variant="secondary"
-                    disabled={aiGroupingPrompt === aiGroupingDefaultPrompt}
+                    disabled={usesDefaultAiGroupingPrompt}
                     onClick={() => onUpdateSettings({ aiGroupingPrompt: aiGroupingDefaultPrompt })}
                   >
-                    恢复默认
+                    {copy.restoreDefault}
                   </Button>
                 </div>
                 <label className={fieldClass} htmlFor="settings-ai-grouping-prompt">
-                  <span>Prompt</span>
+                  <span>{copy.prompt}</span>
                   <Textarea
                     id="settings-ai-grouping-prompt"
                     className={cn(textareaClass, "min-h-[150px]")}
                     value={aiGroupingPrompt}
-                    placeholder="输入 AI 分组 Prompt"
+                    placeholder={copy.groupingPromptPlaceholder}
                     onChange={(event) => onUpdateSettings({ aiGroupingPrompt: event.target.value })}
                   />
                 </label>
@@ -882,6 +1306,78 @@ function SettingsNavItem({
       {icon}
       {label}
     </Button>
+  );
+}
+
+function AboutLink({
+  href,
+  icon,
+  label,
+  action,
+  onOpenExternal,
+}: {
+  href: string;
+  icon: React.ReactNode;
+  label: string;
+  action: string;
+  onOpenExternal(url: string): void;
+}) {
+  return (
+    <div className="flex min-h-10 items-center justify-between gap-3 rounded-[9px] bg-[color-mix(in_srgb,var(--panel)_58%,var(--panel-2))] px-3 py-2 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-soft)_82%,transparent)]">
+      <div className="flex min-w-0 items-center gap-2 text-[13px] font-[660] text-[var(--text)]">
+        <span className="grid size-6 place-items-center rounded-[7px] bg-[color-mix(in_srgb,var(--panel-3)_70%,transparent)] text-[var(--muted)]">
+          {icon}
+        </span>
+        <span className="min-w-0 truncate">{label}</span>
+      </div>
+      <button
+        className="group inline-flex h-7 flex-none items-center gap-1.5 rounded-[7px] px-2 text-[12px] font-[660] text-[var(--accent)] no-underline transition-[background-color,box-shadow,scale] duration-[140ms] hover:bg-[color-mix(in_srgb,var(--accent-soft)_48%,transparent)] active:scale-[0.96] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--accent)_22%,transparent)]"
+        type="button"
+        onClick={() => onOpenExternal(href)}
+      >
+        <span>{action}</span>
+        <ExternalLink
+          className="text-[var(--muted)] transition-transform duration-[140ms] group-hover:translate-x-0.5"
+          size={13}
+        />
+      </button>
+    </div>
+  );
+}
+
+function AboutInfoRow({ icon, title, value }: { icon: React.ReactNode; title: string; value: string }) {
+  return (
+    <div className="flex min-h-10 items-center justify-between gap-3 rounded-[9px] bg-[color-mix(in_srgb,var(--panel)_58%,var(--panel-2))] px-3 py-2 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-soft)_82%,transparent)]">
+      <div className="flex min-w-0 items-center gap-2 text-[13px] font-[660] text-[var(--text)]">
+        <span className="grid size-6 place-items-center rounded-[7px] bg-[color-mix(in_srgb,var(--panel-3)_70%,transparent)] text-[var(--muted)]">
+          {icon}
+        </span>
+        <span>{title}</span>
+      </div>
+      <span className="text-[13px] font-[680] tabular-nums text-[var(--text)]">{value}</span>
+    </div>
+  );
+}
+
+function AboutInfoCard({
+  icon,
+  title,
+  description,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 rounded-[10px] bg-[color-mix(in_srgb,var(--panel)_82%,var(--panel-2))] p-4 shadow-[0_1px_2px_rgba(15,23,42,0.03),inset_0_0_0_1px_var(--border-soft)]">
+      <span className="grid size-8 place-items-center rounded-[9px] bg-[color-mix(in_srgb,var(--panel-3)_62%,transparent)] text-[var(--muted)]">
+        {icon}
+      </span>
+      <div className="min-w-0">
+        <div className="text-[13px] font-[680] text-[var(--text)]">{title}</div>
+        <p className="mt-1 text-xs leading-5 text-[var(--muted)]">{description}</p>
+      </div>
+    </div>
   );
 }
 

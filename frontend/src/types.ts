@@ -20,8 +20,11 @@ export type AppTheme =
   | "retro-arcade"
   | "bubblegum";
 
+export type AppLanguage = "zh-CN" | "en-US";
+
 export interface UiSettings {
   theme: AppTheme;
+  language: AppLanguage;
 }
 
 export type AiProvider =
@@ -110,6 +113,7 @@ export interface NativeMessage {
   command: string;
   store?: Store;
   path?: string;
+  url?: string;
   curl?: string;
   fetchResponse?: boolean;
   aiRequest?: AiRequest;

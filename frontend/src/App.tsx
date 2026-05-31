@@ -61,8 +61,9 @@ import type {
 } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast as sonnerToast } from "sonner";
+import { messages } from "./i18n";
 import { formatJson, getJsonStatus } from "./lib/json";
-import { send } from "./lib/native";
+import { openExternalUrl, send } from "./lib/native";
 import { generateEndpointTypeScript } from "./lib/typescript-from-json";
 import type {
   AiCliPreset,
@@ -71,6 +72,7 @@ import type {
   AiPreview,
   AiProgress,
   AiSettings,
+  AppLanguage,
   AppTheme,
   Endpoint,
   EndpointSearchMatch,
@@ -83,8 +85,12 @@ import type {
 const successBody = '{\n  "code": 200,\n  "message": "success",\n  "data": {}\n}';
 const failureBody = '{\n  "code": 500,\n  "message": "server error",\n  "data": null\n}';
 const emptyBody = '{\n  "code": 200,\n  "message": "success",\n  "data": []\n}';
-const defaultAiGroupingPrompt =
+const legacyZhAiGroupingPrompt =
   "你是一个资深前端 Mock 接口目录整理助手。请按业务域为接口建议分组。分组名使用简洁中文，优先一到两级路径；优先复用语义相近的已有分组；不要把域名、版本号、api、json、mock、response 作为分组名；不要为每个接口创造过细目录。";
+const legacyDefaultAiGroupingPrompts = [
+  legacyZhAiGroupingPrompt,
+  messages["en-US"].main.defaultAiGroupingPrompt,
+];
 const defaultAiSettings: AiSettings = {
   enabled: false,
   provider: "openrouter",
@@ -93,11 +99,14 @@ const defaultAiSettings: AiSettings = {
   apiKey: "",
   apiKeys: {},
   baseUrl: "",
-  aiGroupingPrompt: defaultAiGroupingPrompt,
+  aiGroupingPrompt: "",
   cliPresetId: "codex-cli",
   cliPresets: [],
 };
-type SettingsSection = "appearance" | "ai" | "cli";
+type SettingsSection = "appearance" | "ai" | "cli" | "about";
+const appVersion = "0.1.0";
+const githubUrl = "https://github.com/zxpzdtom/MockKit";
+const issuesUrl = `${githubUrl}/issues`;
 const defaultCliPresets: AiCliPreset[] = [
   {
     id: "codex-cli",
@@ -118,6 +127,7 @@ const defaultCliPresets: AiCliPreset[] = [
 ];
 const defaultUiSettings: UiSettings = {
   theme: "mockkit",
+  language: "zh-CN",
 };
 const appThemes = new Set<AppTheme>([
   "mockkit",
@@ -131,6 +141,7 @@ const appThemes = new Set<AppTheme>([
   "retro-arcade",
   "bubblegum",
 ]);
+const appLanguages = new Set<AppLanguage>(["zh-CN", "en-US"]);
 const localAiProviders = new Set<AiSettings["provider"]>(["codex-cli", "claude-cli", "custom-cli"]);
 function defaultModelForProvider(provider: AiSettings["provider"]) {
   if (provider === "gemini") return "gemini-2.5-flash";
@@ -155,7 +166,7 @@ const panelLabelClass = "text-[11px] font-[650] uppercase tracking-[0.02em] text
 const editTriggerClass =
   "inline-flex size-[18px] min-h-[18px] min-w-[18px] rounded-[7px] text-[color-mix(in_srgb,var(--muted)_76%,var(--text))] opacity-[0.46] align-[-2px] hover:bg-[color-mix(in_srgb,var(--panel-3)_78%,transparent)] hover:text-[var(--text)] hover:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100 [&_svg]:size-2.5";
 const editorActionsClass =
-  "flex items-center gap-[5px] [&_[data-slot=button]]:h-7 [&_[data-slot=button]]:rounded-[7px] [&_[data-slot=button]]:border-transparent [&_[data-slot=button]]:bg-[color-mix(in_srgb,var(--panel)_58%,transparent)] [&_[data-slot=button]]:text-[color-mix(in_srgb,var(--text)_82%,var(--muted))] [&_[data-slot=button]]:shadow-none [&_[data-slot=button]]:transition-[background-color,border-color,box-shadow,color,transform] [&_[data-slot=button]]:duration-[120ms] hover:[&_[data-slot=button]]:border-[color-mix(in_srgb,var(--accent)_18%,transparent)] hover:[&_[data-slot=button]]:bg-[color-mix(in_srgb,var(--accent-soft)_42%,var(--panel))] hover:[&_[data-slot=button]]:text-[color-mix(in_srgb,var(--accent)_34%,var(--text))] hover:[&_[data-slot=button]]:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--accent)_7%,transparent)] active:[&_[data-slot=button]]:translate-y-px active:[&_[data-slot=button]]:border-[color-mix(in_srgb,var(--accent)_24%,transparent)] active:[&_[data-slot=button]]:bg-[color-mix(in_srgb,var(--accent-soft)_60%,var(--panel-2))] active:[&_[data-slot=button]]:shadow-[inset_0_1px_1px_rgba(15,23,42,0.08)] [&_[data-slot=button][aria-pressed=true]]:border-[color-mix(in_srgb,var(--accent)_32%,transparent)] [&_[data-slot=button][aria-pressed=true]]:bg-[color-mix(in_srgb,var(--accent-soft)_58%,var(--panel))] [&_[data-slot=button][aria-pressed=true]]:text-[color-mix(in_srgb,var(--accent)_42%,var(--text))] [&_[data-slot=button][aria-pressed=true]]:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--accent)_10%,transparent)]";
+  "flex items-center gap-[4px] [&_[data-slot=button]]:size-7 [&_[data-slot=button]]:min-h-7 [&_[data-slot=button]]:rounded-[7px] [&_[data-slot=button]]:border-transparent [&_[data-slot=button]]:bg-[color-mix(in_srgb,var(--panel)_58%,transparent)] [&_[data-slot=button]]:p-0 [&_[data-slot=button]]:text-[color-mix(in_srgb,var(--text)_82%,var(--muted))] [&_[data-slot=button]]:shadow-none [&_[data-slot=button]]:transition-[background-color,border-color,box-shadow,color,transform] [&_[data-slot=button]]:duration-[120ms] hover:[&_[data-slot=button]]:border-[color-mix(in_srgb,var(--accent)_18%,transparent)] hover:[&_[data-slot=button]]:bg-[color-mix(in_srgb,var(--accent-soft)_42%,var(--panel))] hover:[&_[data-slot=button]]:text-[color-mix(in_srgb,var(--accent)_34%,var(--text))] hover:[&_[data-slot=button]]:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--accent)_7%,transparent)] active:[&_[data-slot=button]]:translate-y-px active:[&_[data-slot=button]]:border-[color-mix(in_srgb,var(--accent)_24%,transparent)] active:[&_[data-slot=button]]:bg-[color-mix(in_srgb,var(--accent-soft)_60%,var(--panel-2))] active:[&_[data-slot=button]]:shadow-[inset_0_1px_1px_rgba(15,23,42,0.08)] [&_[data-slot=button][aria-pressed=true]]:border-[color-mix(in_srgb,var(--accent)_32%,transparent)] [&_[data-slot=button][aria-pressed=true]]:bg-[color-mix(in_srgb,var(--accent-soft)_58%,var(--panel))] [&_[data-slot=button][aria-pressed=true]]:text-[color-mix(in_srgb,var(--accent)_42%,var(--text))] [&_[data-slot=button][aria-pressed=true]]:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--accent)_10%,transparent)]";
 const createId = () => crypto.randomUUID();
 
 function isCodeEditorShortcutTarget(target: EventTarget | null) {
@@ -172,6 +183,27 @@ function formatDetectedAt(value?: string) {
     second: "2-digit",
     hour12: false,
   }).format(date)}`;
+}
+
+function localizedEndpointDescription(description: string, copy: (typeof messages)[AppLanguage]) {
+  const normalized = description.trim();
+  if (normalized === "从 cURL 导入。" || normalized === "Imported from cURL.") {
+    return copy.main.importedFromCurl;
+  }
+  if (
+    normalized === "从现有 Chrome Overrides 文件导入。" ||
+    normalized === "Imported from existing Chrome Overrides files."
+  ) {
+    return copy.main.importedFromOverrides;
+  }
+  return description;
+}
+
+function resolveAiGroupingPrompt(storedPrompt: string | undefined, copy: (typeof messages)[AppLanguage]) {
+  if (storedPrompt == null) return copy.main.defaultAiGroupingPrompt;
+  const trimmed = storedPrompt.trim();
+  if (legacyDefaultAiGroupingPrompts.includes(trimmed)) return copy.main.defaultAiGroupingPrompt;
+  return storedPrompt;
 }
 
 function activeCase(endpoint: Endpoint | null) {
@@ -295,6 +327,7 @@ function normalizeStore(store: Store) {
   store.aiSettings = { ...defaultAiSettings, ...(store.aiSettings ?? {}) };
   store.uiSettings = { ...defaultUiSettings, ...(store.uiSettings ?? {}) };
   if (!appThemes.has(store.uiSettings.theme)) store.uiSettings.theme = defaultUiSettings.theme;
+  if (!appLanguages.has(store.uiSettings.language)) store.uiSettings.language = defaultUiSettings.language;
   store.aiSettings.models = { ...(store.aiSettings.models ?? {}) };
   store.aiSettings.apiKeys = { ...(store.aiSettings.apiKeys ?? {}) };
   const customPresets = (store.aiSettings.cliPresets ?? []).filter(
@@ -473,11 +506,15 @@ function writePersistedUiState(state: PersistedUiState) {
   }
 }
 
-function buildDirectoryTree(endpoints: Endpoint[], groupPaths: string[] = []) {
+function buildDirectoryTree(
+  endpoints: Endpoint[],
+  groupPaths: string[] = [],
+  rootLabel = "Overrides 根目录",
+) {
   const root: TreeNode = {
     id: "root",
     type: "directory",
-    label: "Overrides 根目录",
+    label: rootLabel,
     path: "",
     count: endpoints.length,
     depth: 0,
@@ -818,6 +855,7 @@ export function App() {
   const aiGroupingRequestIdRef = useRef<string | null>(null);
   const storeRef = useRef<Store | null>(null);
   const pendingThemeRef = useRef<AppTheme | null>(null);
+  const pendingLanguageRef = useRef<AppLanguage | null>(null);
 
   const showToast = useCallback((message: string, error = false) => {
     if (error) {
@@ -843,6 +881,17 @@ export function App() {
             pendingThemeRef.current = null;
           } else {
             nextStore.uiSettings = { ...(nextStore.uiSettings ?? defaultUiSettings), theme: pendingTheme };
+          }
+        }
+        const pendingLanguage = pendingLanguageRef.current;
+        if (pendingLanguage) {
+          if (nextStore.uiSettings?.language === pendingLanguage) {
+            pendingLanguageRef.current = null;
+          } else {
+            nextStore.uiSettings = {
+              ...(nextStore.uiSettings ?? defaultUiSettings),
+              language: pendingLanguage,
+            };
           }
         }
         storeRef.current = nextStore;
@@ -963,9 +1012,17 @@ export function App() {
   const groupPaths = store?.groupPaths ?? [];
   const endpoint = endpoints.find((item) => item.id === selectedEndpointId) ?? null;
   const mockCase = endpoint?.cases.find((item) => item.id === selectedCaseId) ?? activeCase(endpoint);
+  const aiSettings = store?.aiSettings ?? defaultAiSettings;
+  const uiSettings = store?.uiSettings ?? defaultUiSettings;
+  const currentTheme = uiSettings.theme;
+  const currentLanguage = uiSettings.language;
+  const copy = messages[currentLanguage];
   const bodyDocumentKey = endpoint && mockCase ? `${endpoint.id}-${mockCase.id}` : "empty";
   const currentBodyDraft = bodyDraftKey === bodyDocumentKey ? bodyDraft : (mockCase?.body ?? "");
-  const directoryTree = useMemo(() => buildDirectoryTree(endpoints, groupPaths), [endpoints, groupPaths]);
+  const directoryTree = useMemo(
+    () => buildDirectoryTree(endpoints, groupPaths, copy.directories.root),
+    [endpoints, groupPaths, copy.directories.root],
+  );
   const compactDirectoryTree = useMemo(
     () => buildCompactDirectoryTree(directoryTree, endpoints),
     [directoryTree, endpoints],
@@ -1008,13 +1065,12 @@ export function App() {
     [endpoints, endpointSearchMatches],
   );
   const selectedEndpointCount = selectedEndpointIds.size;
-  const isSelectedEndpointGeneratingMetadata =
-    endpoint ? aiMetadataGeneratingEndpointIds.has(endpoint.id) : false;
+  const isSelectedEndpointGeneratingMetadata = endpoint
+    ? aiMetadataGeneratingEndpointIds.has(endpoint.id)
+    : false;
   const jsonStatus = useMemo(() => getJsonStatus(currentBodyDraft), [currentBodyDraft]);
   const previewFile = useMemo(() => caseFile(endpoint, mockCase ?? null), [endpoint, mockCase]);
-  const aiSettings = store?.aiSettings ?? defaultAiSettings;
-  const uiSettings = store?.uiSettings ?? defaultUiSettings;
-  const currentTheme = uiSettings.theme;
+  const jsonStatusMessage = jsonStatus.kind === "json" ? copy.main.jsonValid : copy.main.plainText;
   const aiEnabled = aiSettings.enabled === true;
   const aiApiKeyCount = localAiProviders.has(aiSettings.provider)
     ? 0
@@ -1024,6 +1080,10 @@ export function App() {
     document.documentElement.dataset.appTheme = currentTheme;
     document.body.dataset.appTheme = currentTheme;
   }, [currentTheme]);
+
+  useEffect(() => {
+    document.documentElement.lang = currentLanguage === "en-US" ? "en" : "zh-CN";
+  }, [currentLanguage]);
 
   useEffect(() => {
     writePersistedUiState({
@@ -1241,7 +1301,7 @@ export function App() {
     if (storeRef.current?.groupPaths?.includes(cleanPath)) {
       setSelectedDirectory(cleanPath);
       setCreateGroupOpen(false);
-      showToast("业务分组已存在。");
+      showToast(copy.main.groupExists);
       return;
     }
     mutateStore((draft) => {
@@ -1316,7 +1376,7 @@ export function App() {
     [persist],
   );
 
-  const selectedDirectoryLabel = selectedDirectory || "Overrides 根目录";
+  const selectedDirectoryLabel = selectedDirectory || copy.directories.root;
   const newEndpointBasePath = "example.com/api/example.json";
   const newEndpointPath = uniqueOverridePath(newEndpointBasePath, endpoints);
 
@@ -1324,7 +1384,7 @@ export function App() {
     const defaultCaseId = createId();
     const nextEndpoint: Endpoint = {
       id: createId(),
-      name: "新接口",
+      name: copy.main.newEndpoint,
       method: "GET",
       overridePath: newEndpointPath,
       groupPath: selectedDirectory || null,
@@ -1334,9 +1394,9 @@ export function App() {
       activeCaseId: defaultCaseId,
       cases: [
         { id: defaultCaseId, name: "Default", body: '{\n  "ok": true\n}', status: 200, headers: "" },
-        { id: createId(), name: "成功", body: successBody, status: 200, headers: "" },
-        { id: createId(), name: "失败", body: failureBody, status: 500, headers: "" },
-        { id: createId(), name: "空数据", body: emptyBody, status: 200, headers: "" },
+        { id: createId(), name: copy.main.successCase, body: successBody, status: 200, headers: "" },
+        { id: createId(), name: copy.main.failureCase, body: failureBody, status: 500, headers: "" },
+        { id: createId(), name: copy.main.emptyCase, body: emptyBody, status: 200, headers: "" },
       ],
     };
     mutateStore((draft) => draft.endpoints.unshift(nextEndpoint));
@@ -1460,7 +1520,9 @@ export function App() {
         if (ids.has(item.id)) item.enabled = enabled;
       }
     });
-    showToast(`${enabled ? "已启用" : "已禁用"} ${endpointIds.length} 个接口。`);
+    showToast(
+      `${enabled ? copy.endpointList.enable : copy.endpointList.disable} ${copy.common.endpointsWithCount(endpointIds.length)}.`,
+    );
   };
 
   const requestDeleteEndpointFromList = (item: Endpoint) => {
@@ -1469,11 +1531,11 @@ export function App() {
       setDeleteTarget({ type: "bulk", endpointIds, count: endpointIds.length });
       return;
     }
-    setDeleteTarget({ type: "endpoint", endpointId: item.id, name: item.name || "未命名接口" });
+    setDeleteTarget({ type: "endpoint", endpointId: item.id, name: item.name || copy.main.unnamedEndpoint });
   };
 
   const requestDeleteEndpointFromTree = (item: Endpoint) => {
-    setDeleteTarget({ type: "endpoint", endpointId: item.id, name: item.name || "未命名接口" });
+    setDeleteTarget({ type: "endpoint", endpointId: item.id, name: item.name || copy.main.unnamedEndpoint });
   };
 
   const requestDeleteDirectory = (path: string) => {
@@ -1481,7 +1543,7 @@ export function App() {
       .filter((item) => isEndpointInDirectory(item, path))
       .map((item) => item.id);
     const pathParts = path.split("/").filter(Boolean);
-    const name = pathParts[pathParts.length - 1] ?? "Overrides 根目录";
+    const name = pathParts[pathParts.length - 1] ?? copy.directories.root;
     setDeleteTarget({
       type: "directory",
       path,
@@ -1504,7 +1566,7 @@ export function App() {
     setSelectedEndpointIds(new Set());
     setSelectedEndpointId(nextSelectedEndpointId);
     setSelectedCaseId(null);
-    showToast(`已删除 ${endpointIds.length} 个接口。`);
+    showToast(`${copy.common.delete} ${copy.common.endpointsWithCount(endpointIds.length)}.`);
   };
 
   const confirmDeleteDirectory = (target: Extract<DeleteTarget, { type: "directory" }>) => {
@@ -1536,10 +1598,18 @@ export function App() {
     setSelectedEndpointId(nextSelectedEndpointId);
     setSelectedCaseId(null);
     if (!target.path) {
-      showToast(target.count > 0 ? `已清空根目录下的 ${target.count} 个接口。` : "根目录已经是空的。");
+      showToast(
+        target.count > 0
+          ? `${copy.directories.clearRoot}: ${copy.common.endpointsWithCount(target.count)}.`
+          : `${copy.directories.root} is empty.`,
+      );
       return;
     }
-    showToast(target.count > 0 ? `已删除目录和 ${target.count} 个接口。` : "已删除空目录。");
+    showToast(
+      target.count > 0
+        ? `${copy.directories.deleteDirectory}: ${copy.common.endpointsWithCount(target.count)}.`
+        : copy.directories.deleteDirectory,
+    );
   };
 
   const setGlobalEnabled = (enabled: boolean) => {
@@ -1634,9 +1704,16 @@ export function App() {
         setEditingTitleDraft(nextName || endpoint?.name || "");
         setEditingDescriptionDraft(nextDescription || endpoint?.description || "");
       }
-      showToast("已用 AI 更新接口名称和说明。");
+      showToast(copy.main.aiRenameAndImprove);
     },
-    [endpoint?.description, endpoint?.name, mutateStore, selectedEndpointId, showToast],
+    [
+      copy.main.aiRenameAndImprove,
+      endpoint?.description,
+      endpoint?.name,
+      mutateStore,
+      selectedEndpointId,
+      showToast,
+    ],
   );
 
   useEffect(() => {
@@ -1663,7 +1740,7 @@ export function App() {
 
   const commitRenameCase = () => {
     if (!editingCaseId) return;
-    const nextName = editingCaseName.trim() || "未命名场景";
+    const nextName = editingCaseName.trim() || copy.main.unnamedCase;
     updateCase("name", nextName);
     setEditingCaseId(null);
     setEditingCaseName("");
@@ -1742,7 +1819,7 @@ export function App() {
     if (!endpoint) return;
     const nextCase: MockCase = {
       id: createId(),
-      name: "新返回场景",
+      name: copy.main.newCase,
       body: "",
       status: 200,
       headers: "",
@@ -1759,7 +1836,7 @@ export function App() {
   const requestDeleteCase = (caseId = mockCase?.id) => {
     if (!endpoint || !caseId) return;
     if (endpoint.cases.length <= 1) {
-      showToast("每个接口至少需要保留一个返回场景。", true);
+      showToast(copy.main.oneResponseCaseRequired, true);
       return;
     }
     const targetCase = endpoint.cases.find((candidate) => candidate.id === caseId);
@@ -1768,7 +1845,7 @@ export function App() {
       type: "case",
       endpointId: endpoint.id,
       caseId,
-      name: targetCase.name || "未命名场景",
+      name: targetCase.name || copy.main.unnamedCase,
     });
   };
 
@@ -1776,7 +1853,7 @@ export function App() {
     const item = storeRef.current?.endpoints.find((candidate) => candidate.id === target.endpointId);
     if (!item) return;
     if (item.cases.length <= 1) {
-      showToast("每个接口至少需要保留一个返回场景。", true);
+      showToast(copy.main.oneResponseCaseRequired, true);
       return;
     }
     let nextCaseId: string | null = null;
@@ -1788,12 +1865,16 @@ export function App() {
       nextCaseId = item.activeCaseId ?? item.cases[0]?.id ?? null;
     });
     setSelectedCaseId(nextCaseId);
-    showToast("已删除返回场景。");
+    showToast(`${copy.common.delete} ${copy.main.responseCases}.`);
   };
 
   const requestDeleteEndpoint = () => {
     if (!endpoint) return;
-    setDeleteTarget({ type: "endpoint", endpointId: endpoint.id, name: endpoint.name || "未命名接口" });
+    setDeleteTarget({
+      type: "endpoint",
+      endpointId: endpoint.id,
+      name: endpoint.name || copy.main.unnamedEndpoint,
+    });
   };
 
   const confirmDeleteEndpoint = (target: Extract<DeleteTarget, { type: "endpoint" }>) => {
@@ -1802,7 +1883,7 @@ export function App() {
     });
     setSelectedEndpointId(null);
     setSelectedCaseId(null);
-    showToast("已删除接口。");
+    showToast(`${copy.common.delete} ${copy.endpointList.endpoint}.`);
   };
 
   const confirmDelete = () => {
@@ -1826,7 +1907,7 @@ export function App() {
       setBodyDraftKey(bodyDocumentKey);
       if (endpoint) persistBody(endpoint.id, mockCase.id, formatted);
     } catch {
-      showToast("响应内容不是有效的 JSON。", true);
+      showToast(copy.main.invalidJson, true);
     }
   };
 
@@ -1838,19 +1919,19 @@ export function App() {
       .then((result) =>
         copyTextToClipboard(result.text).then((success) => {
           if (!success) {
-            showToast("复制失败，请手动复制 TypeScript 定义。", true);
+            showToast(copy.common.copyFailed, true);
             return;
           }
           const skippedCount = result.skippedCases.length;
           showToast(
             skippedCount > 0
-              ? `已复制 ${result.includedCount} 个场景的 TypeScript 定义，跳过 ${skippedCount} 个无效场景。`
-              : `已复制 ${result.includedCount} 个场景的 TypeScript 定义。`,
+              ? copy.main.typeScriptCopiedWithSkipped(result.includedCount, skippedCount)
+              : copy.main.typeScriptCopied(result.includedCount),
           );
         }),
       )
       .catch((error) => {
-        showToast(error instanceof Error ? error.message : "生成 TypeScript 定义失败。", true);
+        showToast(error instanceof Error ? error.message : copy.main.typeScriptFailed, true);
       })
       .finally(() => setCopyingTypeScript(false));
   };
@@ -1859,7 +1940,7 @@ export function App() {
     if (importingCurl) return;
     const curl = curlText.trim();
     if (!curl) {
-      showToast("先粘贴一段 cURL。", true);
+      showToast(copy.main.pasteCurlFirst, true);
       return;
     }
     setImportingCurl(true);
@@ -1909,6 +1990,7 @@ export function App() {
 
   const updateUiSettings = (patch: Partial<UiSettings>) => {
     if (patch.theme) pendingThemeRef.current = patch.theme;
+    if (patch.language) pendingLanguageRef.current = patch.language;
     mutateStore((draft) => {
       draft.uiSettings = {
         ...defaultUiSettings,
@@ -1940,12 +2022,12 @@ export function App() {
     void copyTextToClipboard(text)
       .then((success) => {
         if (!success) {
-          showToast("复制失败，请手动复制命令。", true);
+          showToast(copy.common.copyFailed, true);
           return;
         }
-        showToast("已复制到剪贴板。");
+        showToast(copy.common.copiedToClipboard);
       })
-      .catch(() => showToast("复制失败，请手动复制命令。", true));
+      .catch(() => showToast(copy.common.copyFailed, true));
   };
 
   const openAiDialog = (mode: "single" | "multiple") => {
@@ -1964,7 +2046,7 @@ export function App() {
 
   const openAiGroupingScope = () => {
     if (endpoints.length === 0) {
-      showToast("还没有可分组的接口。", true);
+      showToast(copy.main.noGroupableEndpoints, true);
       return;
     }
     if (!aiEnabled) {
@@ -1993,10 +2075,10 @@ export function App() {
       return;
     }
     setAiMetadataGeneratingEndpointIds((current) => new Set(current).add(endpoint.id));
-    setAiProgress({ stage: "starting", message: "AI 正在理解接口用途..." });
+    setAiProgress({ stage: "starting", message: copy.main.aiUnderstandingEndpoint });
     send("generateAiMetadata", {
       aiMetadataRequest: {
-        instruction: "根据接口真实用途重新命名标题，并同步生成或优化说明。",
+        instruction: copy.main.aiRenameInstruction,
         endpoint: {
           id: endpoint.id,
           name: endpoint.name,
@@ -2015,7 +2097,7 @@ export function App() {
 
   const generateAiGrouping = (targetEndpoints: Endpoint[]) => {
     if (targetEndpoints.length === 0) {
-      showToast("请至少选择 1 个接口。", true);
+      showToast(copy.main.selectAtLeastOneEndpoint, true);
       return;
     }
     const ungroupedEndpoints = endpoints.filter((item) => !cleanGroupPath(item.groupPath ?? ""));
@@ -2028,31 +2110,34 @@ export function App() {
         const samples = groupEndpoints
           .slice(0, 3)
           .map((item) => item.name || item.overridePath)
-          .join("、");
-        return `${groupPath}（${groupEndpoints.length} 个${samples ? `，例如：${samples}` : ""}）`;
+          .join(currentLanguage === "zh-CN" ? "、" : ", ");
+        return copy.main.existingGroupSummary(groupPath, groupEndpoints.length, samples);
       });
     const groupingScopeInstruction =
       targetEndpoints.length < endpoints.length
-        ? `只需要为用户本次选择的 ${targetEndpoints.length} 个接口建议分组。已有分组是可复用的目录上下文，不要返回未选择的接口。`
+        ? copy.main.aiGroupingSelectedScopeInstruction(targetEndpoints.length)
         : ungroupedEndpoints.length > 0
-          ? "为所有接口建议分组；已有分组可作为上下文，合理的已有分组应尽量沿用。"
-          : "所有接口都已有业务分组，请检查是否存在明显不合理的归类；合理的已有分组应尽量沿用。";
+          ? copy.main.aiGroupingAllScopeInstruction
+          : copy.main.aiGroupingReviewScopeInstruction;
     const aiGroupingRequestId = createId();
     aiGroupingRequestIdRef.current = aiGroupingRequestId;
     setAiGroupingGenerating(true);
     setAiGroupingPreview(null);
     setAiGroupingPreviewEndpoints(targetEndpoints);
-    setAiProgress({ stage: "starting", message: "AI 正在分析接口目录..." });
+    setAiProgress({ stage: "starting", message: copy.main.aiAnalyzingDirectories });
     send("generateAiGrouping", {
       aiGroupingRequestId,
       aiGroupingRequest: {
         instruction: [
-          (aiSettings.aiGroupingPrompt?.trim() || defaultAiGroupingPrompt).trim(),
+          resolveAiGroupingPrompt(aiSettings.aiGroupingPrompt, copy).trim() ||
+            copy.main.defaultAiGroupingPrompt,
           groupingScopeInstruction,
-          "根据接口名称、请求方法、Override 路径和说明，按业务域自动归类。",
+          copy.main.aiGroupingInstruction,
           existingGroupSummaries.length > 0
-            ? `已有分组上下文：${existingGroupSummaries.join("；")}。优先复用语义相近的已有分组。`
-            : "当前还没有已有业务分组，可以创建新的简洁分组。",
+            ? copy.main.existingGroupContext(
+                existingGroupSummaries.join(currentLanguage === "zh-CN" ? "；" : "; "),
+              )
+            : copy.main.emptyGroupContext,
         ].join("\n"),
         endpoints: targetEndpoints.map((item) => ({
           id: item.id,
@@ -2096,7 +2181,7 @@ export function App() {
     });
     setAiGroupingPreview(null);
     setAiGroupingPreviewEndpoints([]);
-    showToast(`已应用 ${cleanAssignments.length} 个 AI 分组建议。`);
+    showToast(copy.main.aiGroupingApplied(cleanAssignments.length));
   };
 
   const generateAiMock = () => {
@@ -2106,7 +2191,7 @@ export function App() {
     setAiPreview(null);
     setAiPreviewTab("case-0");
     setAiPreviewEditingIndex(null);
-    setAiProgress({ stage: "starting", message: "AI 生成已开始，正在准备上下文..." });
+    setAiProgress({ stage: "starting", message: copy.main.aiMockStarting });
     send("generateAiMock", {
       aiRequest: {
         mode: aiDialogMode,
@@ -2147,7 +2232,7 @@ export function App() {
         firstGeneratedCaseId ??= nextCaseId;
         item.cases.push({
           id: nextCaseId,
-          name: generated.name || "AI 场景",
+          name: generated.name || copy.main.aiCaseFallbackName,
           body: generated.body,
           status: 200,
           headers: "",
@@ -2162,7 +2247,7 @@ export function App() {
     setAiPreviewTab("case-0");
     setAiPreviewEditingIndex(null);
     setAiProgress(null);
-    showToast("已应用 AI 生成结果。");
+    showToast(copy.main.aiMockApplied);
   };
 
   const updateAiPreviewCaseBody = (index: number, body: string) => {
@@ -2190,12 +2275,12 @@ export function App() {
     if (!item) return;
     setAiPreviewTab(`case-${index}`);
     setAiPreviewEditingIndex(index);
-    setAiPreviewEditingName(item.name || `场景 ${index + 1}`);
+    setAiPreviewEditingName(item.name || copy.main.generatedCaseName(index));
   };
 
   const commitRenameAiPreviewCase = () => {
     if (aiPreviewEditingIndex === null) return;
-    updateAiPreviewCaseName(aiPreviewEditingIndex, aiPreviewEditingName.trim() || "未命名场景");
+    updateAiPreviewCaseName(aiPreviewEditingIndex, aiPreviewEditingName.trim() || copy.main.unnamedCase);
     setAiPreviewEditingIndex(null);
     setAiPreviewEditingName("");
   };
@@ -2215,7 +2300,11 @@ export function App() {
   };
 
   if (!store) {
-    return <div className="grid h-screen place-items-center text-[13px] text-muted">正在载入...</div>;
+    return (
+      <div className="grid h-screen place-items-center text-[13px] text-muted">
+        {messages["zh-CN"].common.loading}
+      </div>
+    );
   }
 
   const aiPreviewCases =
@@ -2237,6 +2326,7 @@ export function App() {
             <AppSidebar
               aiGroupingEnabled={aiEnabled}
               directoryViewMode={directoryViewMode}
+              messages={copy.sidebar}
               mockEnabled={store.mockEnabled}
               overridesFolder={store.overridesFolder}
               onAiGroup={openAiGroupingScope}
@@ -2246,7 +2336,7 @@ export function App() {
             >
               <ScrollArea
                 aria-activedescendant={treeNodeDomId(focusedTreeNodeId)}
-                aria-label="目录列表"
+                aria-label={copy.directories.listAria}
                 className="min-h-0 flex-1 pr-1 scroll-mask-y-4 source-directory-scroll"
                 onKeyDown={handleDirectoryKeyDown}
                 role="tree"
@@ -2256,6 +2346,7 @@ export function App() {
                   endpoints={endpoints}
                   dragOverPath={dragOverDirectory}
                   expandedPaths={expandedDirectories}
+                  messages={copy.directories}
                   node={displayedDirectoryTree}
                   overridesFolder={store.overridesFolder}
                   selectedDirectoryPath={selectedDirectory}
@@ -2279,6 +2370,8 @@ export function App() {
             <main className="grid h-full min-h-0 min-w-0 grid-rows-[52px_minmax(0,1fr)] overflow-hidden bg-[var(--panel)]">
               <MainToolbar
                 endpointCount={store.endpoints.length}
+                messages={copy.toolbar}
+                commonMessages={copy.common}
                 onImportCurl={() => setImportOpen(true)}
                 onOpenAiSettings={() => openSettings("ai")}
               />
@@ -2295,6 +2388,8 @@ export function App() {
                     endpointSearchMatches={endpointSearchMatches}
                     endpoints={endpoints}
                     filteredEndpoints={filteredEndpoints}
+                    messages={copy.endpointList}
+                    commonMessages={copy.common}
                     getEndpointContextIds={getEndpointContextIds}
                     query={query}
                     searchRegexEnabled={searchRegexEnabled}
@@ -2321,9 +2416,9 @@ export function App() {
                   <section className="grid min-h-0 min-w-0 overflow-hidden bg-[var(--panel)]">
                     {!endpoint || !mockCase ? (
                       <div className="grid h-full place-content-center gap-[7px] p-8 text-center">
-                        <div className="text-lg font-bold">还没有选择接口</div>
+                        <div className="text-lg font-bold">{copy.main.noEndpointSelectedTitle}</div>
                         <div className="max-w-[420px] text-[var(--muted)]">
-                          选择左侧接口，或新增一个接口来创建返回场景。
+                          {copy.main.noEndpointSelectedDescription}
                         </div>
                       </div>
                     ) : (
@@ -2345,10 +2440,12 @@ export function App() {
                             ) : (
                               <div className="group block min-w-0 max-w-full">
                                 <div className="flex w-full min-w-0 max-w-full items-baseline p-0 text-left text-[21px] font-[720] text-[var(--text)]">
-                                  <span className="min-w-0 truncate">{endpoint.name || "未命名接口"}</span>
-                                  <Tooltip content="编辑接口名称" side="bottom" sideOffset={7}>
+                                  <span className="min-w-0 truncate">
+                                    {endpoint.name || copy.main.unnamedEndpoint}
+                                  </span>
+                                  <Tooltip content={copy.main.editEndpointName} side="bottom" sideOffset={7}>
                                     <Button
-                                      aria-label="编辑接口名称"
+                                      aria-label={copy.main.editEndpointName}
                                       className={cn(editTriggerClass, "ml-[7px] shrink-0 align-[1px]")}
                                       size="icon-xs"
                                       type="button"
@@ -2359,9 +2456,13 @@ export function App() {
                                     </Button>
                                   </Tooltip>
                                   {aiEnabled ? (
-                                    <Tooltip content="AI 重新命名并优化说明" side="bottom" sideOffset={7}>
+                                    <Tooltip
+                                      content={copy.main.aiRenameAndImprove}
+                                      side="bottom"
+                                      sideOffset={7}
+                                    >
                                       <Button
-                                        aria-label="AI 重新命名接口"
+                                        aria-label={copy.main.aiRenameEndpoint}
                                         className={cn(
                                           editTriggerClass,
                                           "ml-1 shrink-0 align-[1px] text-[color-mix(in_srgb,var(--accent)_60%,var(--text))]",
@@ -2388,7 +2489,7 @@ export function App() {
                               <Textarea
                                 autoFocus
                                 className="mt-0.5 h-auto max-h-24 min-h-[42px] overflow-auto whitespace-pre-wrap border-[var(--border)] bg-[color-mix(in_srgb,var(--panel)_82%,var(--panel-2))] px-[9px] py-0 text-left leading-[18px] text-[var(--muted)]"
-                                placeholder="说明"
+                                placeholder={copy.main.descriptionPlaceholder}
                                 value={editingDescriptionDraft}
                                 onBlur={commitDescription}
                                 onChange={(event) => setEditingDescriptionDraft(event.target.value)}
@@ -2401,10 +2502,12 @@ export function App() {
                             ) : (
                               <div className="group block min-w-0 max-w-full">
                                 <div className="mt-0.5 inline min-w-0 whitespace-pre-wrap p-0 text-left leading-[18px] text-[var(--muted)] [overflow-wrap:anywhere]">
-                                  {endpoint.description || "添加说明"}
-                                  <Tooltip content="编辑说明" side="bottom" sideOffset={7}>
+                                  {endpoint.description
+                                    ? localizedEndpointDescription(endpoint.description, copy)
+                                    : copy.main.addDescription}
+                                  <Tooltip content={copy.main.editDescription} side="bottom" sideOffset={7}>
                                     <Button
-                                      aria-label="编辑说明"
+                                      aria-label={copy.main.editDescription}
                                       className={cn(editTriggerClass, "ml-1.5")}
                                       size="icon-xs"
                                       type="button"
@@ -2423,24 +2526,24 @@ export function App() {
                         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-x-2.5 gap-y-2 p-0">
                           <div className="min-w-0">
                             <span className="text-[11px] font-[560] text-[var(--muted)]">
-                              Chrome Overrides 路径
+                              {copy.main.chromeOverridesPath}
                             </span>
                             <div
                               className="endpoint-path-text min-h-[30px] select-text whitespace-normal py-1.5 text-xs leading-[18px] text-[color-mix(in_srgb,var(--muted)_88%,var(--text))]"
-                              aria-label="Override 路径"
+                              aria-label={copy.main.overridePathAria}
                             >
                               {renderReadablePath(endpoint.overridePath)}
                             </div>
                           </div>
                           <div className="inline-flex items-center gap-1">
                             <Switch
-                              aria-label="当前接口 Mock"
+                              aria-label={copy.main.currentEndpointMock}
                               checked={endpoint.enabled !== false}
                               onCheckedChange={(checked) => updateEndpointEnabled(endpoint.id, checked)}
                               size="sm"
                             />
                             <Button
-                              aria-label="删除接口"
+                              aria-label={copy.main.deleteEndpoint}
                               className="size-[30px] text-[var(--danger)] hover:bg-[var(--danger-soft)] hover:text-[var(--danger)]"
                               variant="ghost"
                               type="button"
@@ -2451,16 +2554,21 @@ export function App() {
                           </div>
                         </div>
 
-                        <div className="grid min-w-0 gap-1.5">
-                          <div className="flex min-w-0 items-center justify-between gap-3">
-                            <div className="inline-flex min-w-0 items-baseline gap-2">
-                              <span className={panelLabelClass}>返回场景</span>
-                              <span className="truncate text-xs text-[var(--faint)]">双击名称重命名</span>
+                        <div className="grid min-w-0 gap-2">
+                          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-start gap-2">
+                            <div className="grid min-w-0 gap-0.5">
+                              <span className={cn(panelLabelClass, "whitespace-nowrap")}>
+                                {copy.main.responseCases}
+                              </span>
+                              <span className="min-w-0 truncate text-xs leading-4 text-[var(--faint)]">
+                                {copy.main.doubleClickRename}
+                              </span>
                             </div>
-                            <div className="inline-flex flex-none items-center gap-1">
-                              <Tooltip content="复制所有返回场景的 TypeScript 定义" side="bottom">
+                            <div className="inline-flex flex-none items-center gap-1 self-start">
+                              <Tooltip content={copy.main.copyTsTooltip} side="bottom">
                                 <Button
-                                  className="min-h-7 origin-center rounded-lg hover:bg-[color-mix(in_srgb,var(--panel-3)_78%,transparent)] active:scale-95"
+                                  aria-label={copy.main.copyTsTooltip}
+                                  className="h-7 min-h-7 origin-center rounded-lg px-2.5 text-[13px] hover:bg-[color-mix(in_srgb,var(--panel-3)_78%,transparent)] active:scale-95"
                                   size="sm"
                                   variant="outline"
                                   type="button"
@@ -2472,21 +2580,24 @@ export function App() {
                                   ) : (
                                     <Braces size={14} />
                                   )}
-                                  复制 TS
+                                  {copy.main.copyTsShort}
                                 </Button>
                               </Tooltip>
                               {aiEnabled ? (
-                                <Button
-                                  className="min-h-7 origin-center rounded-lg hover:bg-[color-mix(in_srgb,var(--panel-3)_78%,transparent)] active:scale-95"
-                                  size="sm"
-                                  variant="outline"
-                                  type="button"
-                                  disabled={!endpoint}
-                                  onClick={() => openAiDialog("multiple")}
-                                >
-                                  <Sparkles size={14} />
-                                  生成多场景
-                                </Button>
+                                <Tooltip content={copy.main.generateMultipleCases} side="bottom">
+                                  <Button
+                                    aria-label={copy.main.generateMultipleCases}
+                                    className="h-7 min-h-7 origin-center rounded-lg px-2.5 text-[13px] hover:bg-[color-mix(in_srgb,var(--panel-3)_78%,transparent)] active:scale-95"
+                                    size="sm"
+                                    variant="outline"
+                                    type="button"
+                                    disabled={!endpoint}
+                                    onClick={() => openAiDialog("multiple")}
+                                  >
+                                    <Sparkles size={14} />
+                                    {copy.main.generateCasesShort}
+                                  </Button>
+                                </Tooltip>
                               ) : null}
                             </div>
                           </div>
@@ -2551,7 +2662,7 @@ export function App() {
                                         )}
                                         {!isEditingCase ? (
                                           <Button
-                                            aria-label={`删除返回场景 ${scenario.name}`}
+                                            aria-label={copy.main.deleteCase(scenario.name)}
                                             className="case-tab-delete"
                                             size="icon-xs"
                                             type="button"
@@ -2576,7 +2687,7 @@ export function App() {
                                   variant="outline"
                                   type="button"
                                   onClick={addCase}
-                                  aria-label="新增返回场景"
+                                  aria-label={copy.main.addCase}
                                 >
                                   <Plus size={16} />
                                 </Button>
@@ -2588,44 +2699,59 @@ export function App() {
                         <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)] overflow-hidden rounded-[11px] border border-[var(--border)] bg-[var(--panel)] shadow-[var(--surface-shadow)]">
                           <div className="flex min-h-11 items-center justify-between gap-3 border-b border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel-2)_52%,transparent)] py-2 pl-3 pr-2.5">
                             <div>
-                              <div className={panelLabelClass}>响应体</div>
+                              <div className={panelLabelClass}>{copy.main.responseBody}</div>
                               <div
                                 className={cn(
                                   "text-xs text-[var(--muted)]",
                                   !jsonStatus.valid && "text-[var(--danger)]",
                                 )}
                               >
-                                {jsonStatus.message}
+                                {jsonStatusMessage}
                               </div>
                             </div>
                             <div className={editorActionsClass}>
                               {aiEnabled ? (
+                                <Tooltip content={copy.main.aiGenerate} side="bottom">
+                                  <Button
+                                    aria-label={copy.main.aiGenerate}
+                                    variant="secondary"
+                                    type="button"
+                                    onClick={() => openAiDialog("single")}
+                                  >
+                                    <Sparkles size={13} />
+                                  </Button>
+                                </Tooltip>
+                              ) : null}
+                              <Tooltip content={copy.main.copy} side="bottom">
                                 <Button
+                                  aria-label={copy.main.copy}
                                   variant="secondary"
                                   type="button"
-                                  onClick={() => openAiDialog("single")}
+                                  onClick={() => navigator.clipboard?.writeText(currentBodyDraft)}
                                 >
-                                  <Sparkles size={13} /> AI 生成
+                                  <Copy size={13} />
                                 </Button>
-                              ) : null}
-                              <Button
-                                variant="secondary"
-                                type="button"
-                                onClick={() => navigator.clipboard?.writeText(currentBodyDraft)}
-                              >
-                                <Copy size={13} /> 复制
-                              </Button>
-                              <Button variant="secondary" type="button" onClick={formatResponse}>
-                                <FileJson size={13} /> 格式化
-                              </Button>
-                              <Button
-                                aria-label="全屏编辑响应体"
-                                variant="secondary"
-                                type="button"
-                                onClick={() => setResponseFullscreenOpen(true)}
-                              >
-                                <Maximize2 size={13} /> 全屏
-                              </Button>
+                              </Tooltip>
+                              <Tooltip content={copy.main.format} side="bottom">
+                                <Button
+                                  aria-label={copy.main.format}
+                                  variant="secondary"
+                                  type="button"
+                                  onClick={formatResponse}
+                                >
+                                  <FileJson size={13} />
+                                </Button>
+                              </Tooltip>
+                              <Tooltip content={copy.main.fullscreen} side="bottom">
+                                <Button
+                                  aria-label={copy.main.fullscreenResponseBody}
+                                  variant="secondary"
+                                  type="button"
+                                  onClick={() => setResponseFullscreenOpen(true)}
+                                >
+                                  <Maximize2 size={13} />
+                                </Button>
+                              </Tooltip>
                             </div>
                           </div>
                           <div className="code-editor" data-file={previewFile.name}>
@@ -2654,6 +2780,8 @@ export function App() {
         <CreateGroupDialog
           cleanGroupPath={cleanGroupPath}
           draft={createGroupDraft}
+          messages={copy.createGroup}
+          commonMessages={copy.common}
           open={createGroupOpen}
           onCreate={createGroup}
           onDraftChange={setCreateGroupDraft}
@@ -2666,6 +2794,8 @@ export function App() {
           endpoints={endpoints}
           expandedDirectoryPaths={expandedDirectories}
           generating={aiGroupingGenerating}
+          messages={copy.aiGroupingScope}
+          commonMessages={copy.common}
           open={aiGroupingScopeOpen}
           selectedEndpointIds={selectedEndpointIds}
           onGenerate={generateAiGrouping}
@@ -2674,6 +2804,8 @@ export function App() {
 
         <AiGroupingDialog
           endpoints={aiGroupingPreviewEndpoints.length > 0 ? aiGroupingPreviewEndpoints : endpoints}
+          messages={copy.aiGrouping}
+          commonMessages={copy.common}
           open={!!aiGroupingPreview}
           preview={aiGroupingPreview}
           onApply={applyAiGroupingPreview}
@@ -2686,6 +2818,8 @@ export function App() {
         />
 
         <DeleteConfirmDialog
+          messages={copy.deleteConfirm}
+          commonMessages={copy.common}
           target={deleteTarget}
           onConfirm={confirmDelete}
           onOpenChange={() => setDeleteTarget(null)}
@@ -2695,6 +2829,8 @@ export function App() {
           curlFetchResponse={curlFetchResponse}
           curlText={curlText}
           importingCurl={importingCurl}
+          messages={copy.importCurl}
+          commonMessages={copy.common}
           open={importOpen}
           onCurlFetchResponseChange={setCurlFetchResponse}
           onCurlTextChange={setCurlText}
@@ -2703,19 +2839,29 @@ export function App() {
         />
 
         <AppSettingsDialog
-          aiGroupingDefaultPrompt={defaultAiGroupingPrompt}
+          aiGroupingDefaultPrompt={copy.main.defaultAiGroupingPrompt}
+          aiGroupingDefaultPromptAliases={[
+            copy.main.defaultAiGroupingPrompt,
+            ...legacyDefaultAiGroupingPrompts,
+          ]}
           aiApiKeyCount={aiApiKeyCount}
           aiApiKeyVisible={aiApiKeyVisible}
           aiEnabled={aiEnabled}
           aiSettings={aiSettings}
+          appVersion={appVersion}
+          githubUrl={githubUrl}
+          issuesUrl={issuesUrl}
+          onOpenExternal={openExternalUrl}
           open={settingsOpen}
           section={settingsSection}
+          language={currentLanguage}
           theme={currentTheme}
           onApiKeyVisibleChange={setAiApiKeyVisible}
           onCopyText={copyCliText}
           onInstallCli={installCli}
           onOpenChange={setSettingsOpen}
           onSectionChange={setSettingsSection}
+          onLanguageChange={(language: AppLanguage) => updateUiSettings({ language })}
           onThemeChange={(theme: AppTheme) => updateUiSettings({ theme })}
           onUpdateSettings={updateAiSettings}
         />
@@ -2759,20 +2905,20 @@ export function App() {
               <>
                 <DialogHeader className="pr-11">
                   <DialogTitle>
-                    {aiDialogMode === "multiple" ? "AI 生成多个返回场景" : "AI 生成当前响应"}
+                    {aiDialogMode === "multiple"
+                      ? copy.main.aiGenerateMultipleTitle
+                      : copy.main.aiGenerateSingleTitle}
                   </DialogTitle>
-                  <DialogDescription>
-                    基于当前响应结构改字段值、数组长度、布尔值和边界状态，生成结果会先预览。
-                  </DialogDescription>
+                  <DialogDescription>{copy.main.aiGenerateDescription}</DialogDescription>
                 </DialogHeader>
                 <div className="grid min-h-0 gap-3 overflow-hidden">
                   <Textarea
-                    aria-label="AI 生成要求"
+                    aria-label={copy.main.aiInstructionAria}
                     className="h-[68px] min-h-[68px] w-full resize-none whitespace-pre-wrap rounded-[10px] border border-[var(--border)] bg-[#fbfbfc] px-3 py-2.5 font-ui text-[13px] leading-normal text-[var(--text)]"
                     placeholder={
                       aiDialogMode === "multiple"
-                        ? "例如：保持字段结构，生成 items 为空、1 条、20 条；enabled 为 true/false；金额为 0、最大值；未登录和无权限场景"
-                        : "例如：把 result.items 改成 20 条；把 enabled 改为 false；把 name 改成长文本；把 total 改为 0"
+                        ? copy.main.aiInstructionMultiplePlaceholder
+                        : copy.main.aiInstructionSinglePlaceholder
                     }
                     value={aiInstruction}
                     onChange={(event) => setAiInstruction(event.target.value)}
@@ -2788,18 +2934,19 @@ export function App() {
                       aria-live="polite"
                     >
                       <div className="flex min-h-[34px] items-center justify-between gap-3 border-b border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel-2)_34%,white)] px-[11px] py-[7px] text-xs font-[620] text-[var(--text)]">
-                        <span>AI 实时返回</span>
+                        <span>{copy.main.aiRealtime}</span>
                         <span className="truncate font-[520] text-[var(--muted)]">
                           {aiGenerating
-                            ? (aiProgress?.message ?? "正在等待 AI 返回...")
-                            : "生成后会在这里预览。"}
+                            ? (aiProgress?.message ?? copy.main.aiWaiting)
+                            : copy.main.aiPreviewHint}
                         </span>
                       </div>
                       <div className="ai-code-preview h-[min(586px,60vh)] min-h-[386px]">
                         <ResponseBodyEditor
-                          ariaLabel="AI 实时返回内容"
+                          ariaLabel={copy.main.aiRealtimeContentAria}
                           value={
-                            aiProgress?.content || (aiGenerating ? "正在建立流式响应..." : "等待生成结果...")
+                            aiProgress?.content ||
+                            (aiGenerating ? copy.main.aiStreamingSetup : copy.main.aiWaitingResult)
                           }
                           wrapLines
                           readOnly
@@ -2857,12 +3004,16 @@ export function App() {
                                   {aiPreviewTab === `case-${index}` ? (
                                     <span className="case-current-dot" aria-hidden="true" />
                                   ) : null}
-                                  <span className="case-tab-label">{item.name || `场景 ${index + 1}`}</span>
+                                  <span className="case-tab-label">
+                                    {item.name || copy.main.generatedCaseName(index)}
+                                  </span>
                                 </TabsTrigger>
                               )}
                               {aiPreviewEditingIndex !== index && aiPreviewCases.length > 1 ? (
                                 <Button
-                                  aria-label={`删除生成场景 ${item.name || `场景 ${index + 1}`}`}
+                                  aria-label={copy.main.deleteGeneratedCase(
+                                    item.name || copy.main.generatedCaseName(index),
+                                  )}
                                   className="case-tab-delete"
                                   size="icon-xs"
                                   type="button"
@@ -2885,7 +3036,8 @@ export function App() {
                           >
                             <div className="border-b border-[var(--border-soft)] px-[11px] py-[9px]">
                               <div className="text-[13px] font-[680]">
-                                {activeAiPreviewCase.name || `场景 ${activeAiPreviewIndex + 1}`}
+                                {activeAiPreviewCase.name ||
+                                  copy.main.generatedCaseName(activeAiPreviewIndex)}
                               </div>
                               {activeAiPreviewCase.description ? (
                                 <div className="pt-0.5 text-xs text-[var(--muted)]">
@@ -2896,9 +3048,10 @@ export function App() {
                             <div className="ai-code-preview h-[min(520px,56vh)]">
                               <ResponseBodyEditor
                                 key={`ai-preview-editor-${aiPreviewTab}`}
-                                ariaLabel={`${
-                                  activeAiPreviewCase.name || `场景 ${activeAiPreviewIndex + 1}`
-                                } 返回内容`}
+                                ariaLabel={copy.main.generatedCaseContentAria(
+                                  activeAiPreviewCase.name ||
+                                    copy.main.generatedCaseName(activeAiPreviewIndex),
+                                )}
                                 value={activeAiPreviewCase.body}
                                 wrapLines
                                 onChange={(body) => updateAiPreviewCaseBody(activeAiPreviewIndex, body)}
@@ -2916,7 +3069,9 @@ export function App() {
                           key={`${item.name}-${index}`}
                         >
                           <div className="border-b border-[var(--border-soft)] px-[11px] py-[9px]">
-                            <div className="text-[13px] font-[680]">{item.name || "AI 生成结果"}</div>
+                            <div className="text-[13px] font-[680]">
+                              {item.name || copy.main.aiGeneratedResult}
+                            </div>
                             {item.description ? (
                               <div className="pt-0.5 text-xs text-[var(--muted)]">{item.description}</div>
                             ) : null}
@@ -2924,7 +3079,9 @@ export function App() {
                           <div className="ai-code-preview h-[min(520px,56vh)] min-h-[320px]">
                             <ResponseBodyEditor
                               key="ai-preview-editor-single"
-                              ariaLabel={`${item.name || "AI 生成结果"} 返回内容`}
+                              ariaLabel={copy.main.generatedCaseContentAria(
+                                item.name || copy.main.aiGeneratedResult,
+                              )}
                               value={item.body}
                               wrapLines
                               onChange={(body) => updateAiPreviewCaseBody(index, body)}
@@ -2950,20 +3107,20 @@ export function App() {
                       setAiProgress(null);
                     }}
                   >
-                    取消
+                    {copy.common.cancel}
                   </Button>
                   {aiPreview ? (
                     <Button type="button" onClick={applyAiPreview}>
-                      应用结果
+                      {copy.main.applyResult}
                     </Button>
                   ) : (
                     <Button type="button" disabled={aiGenerating} onClick={generateAiMock}>
                       {aiGenerating ? (
                         <>
-                          <Loader2 className="animate-spin" size={14} /> 流式生成中...
+                          <Loader2 className="animate-spin" size={14} /> {copy.main.streaming}
                         </>
                       ) : (
-                        "生成"
+                        copy.main.generate
                       )}
                     </Button>
                   )}
@@ -2991,7 +3148,7 @@ export function App() {
             }}
           >
             <Button
-              aria-label="关闭全屏编辑"
+              aria-label={copy.main.closeFullscreen}
               className={cn("absolute right-4 top-4 z-[2]", dialogCloseButtonClass)}
               size="icon-sm"
               type="button"
@@ -3005,44 +3162,64 @@ export function App() {
             </Button>
             <DialogHeader className="flex items-start justify-between gap-4 pr-[42px]">
               <div>
-                <DialogTitle>响应体</DialogTitle>
+                <DialogTitle>{copy.main.responseBody}</DialogTitle>
                 <DialogDescription>{previewFile.name}</DialogDescription>
               </div>
               <div className="inline-flex flex-none items-center gap-2">
                 <div className={editorActionsClass}>
                   {aiEnabled ? (
-                    <Button variant="secondary" type="button" onClick={() => openAiDialog("single")}>
-                      <Sparkles size={13} /> AI 编辑
-                    </Button>
+                    <Tooltip content={copy.main.aiGenerate} side="bottom">
+                      <Button
+                        aria-label={copy.main.aiGenerate}
+                        variant="secondary"
+                        type="button"
+                        onClick={() => openAiDialog("single")}
+                      >
+                        <Sparkles size={13} />
+                      </Button>
+                    </Tooltip>
                   ) : null}
-                  <Button
-                    variant="secondary"
-                    type="button"
-                    onClick={() => navigator.clipboard?.writeText(currentBodyDraft)}
-                  >
-                    <Copy size={13} /> 复制
-                  </Button>
-                  <Button variant="secondary" type="button" onClick={formatResponse}>
-                    <FileJson size={13} /> 格式化
-                  </Button>
-                  <Button
-                    aria-pressed={fullscreenWrapLines}
-                    variant="secondary"
-                    type="button"
-                    onClick={() => setFullscreenWrapLines((enabled) => !enabled)}
-                  >
-                    <WrapText size={13} /> 换行
-                  </Button>
+                  <Tooltip content={copy.main.copy} side="bottom">
+                    <Button
+                      aria-label={copy.main.copy}
+                      variant="secondary"
+                      type="button"
+                      onClick={() => navigator.clipboard?.writeText(currentBodyDraft)}
+                    >
+                      <Copy size={13} />
+                    </Button>
+                  </Tooltip>
+                  <Tooltip content={copy.main.format} side="bottom">
+                    <Button
+                      aria-label={copy.main.format}
+                      variant="secondary"
+                      type="button"
+                      onClick={formatResponse}
+                    >
+                      <FileJson size={13} />
+                    </Button>
+                  </Tooltip>
+                  <Tooltip content={copy.main.wrapLines} side="bottom">
+                    <Button
+                      aria-label={copy.main.wrapLines}
+                      aria-pressed={fullscreenWrapLines}
+                      variant="secondary"
+                      type="button"
+                      onClick={() => setFullscreenWrapLines((enabled) => !enabled)}
+                    >
+                      <WrapText size={13} />
+                    </Button>
+                  </Tooltip>
                 </div>
               </div>
             </DialogHeader>
             <div className="flex min-h-7 items-center border-y border-[var(--border-soft)] px-[18px] text-xs text-[var(--muted)]">
-              <span className={cn(!jsonStatus.valid && "text-[var(--danger)]")}>{jsonStatus.message}</span>
+              <span className={cn(!jsonStatus.valid && "text-[var(--danger)]")}>{jsonStatusMessage}</span>
             </div>
             <div className="fullscreen-code-editor" data-file={previewFile.name}>
               <ResponseBodyEditor
                 key={`${bodyDocumentKey}-fullscreen`}
-                ariaLabel="全屏响应内容"
+                ariaLabel={copy.main.fullscreenResponseContent}
                 value={currentBodyDraft}
                 wrapLines={fullscreenWrapLines}
                 onChange={(nextBody) => {
@@ -3067,6 +3244,7 @@ interface DirectoryNodeProps {
   dragOverPath: string | null;
   expandedPaths: Set<string>;
   focusedNodeId: string;
+  messages: (typeof messages)["zh-CN"]["directories"];
   node: TreeNode;
   overridesFolder: string;
   selectedDirectoryPath: string;
@@ -3087,6 +3265,7 @@ function DirectoryNode({
   dragOverPath,
   expandedPaths,
   focusedNodeId,
+  messages,
   node,
   overridesFolder,
   selectedDirectoryPath,
@@ -3154,17 +3333,17 @@ function DirectoryNode({
                   onSetEndpointEnabled(endpoint.id, !endpointEnabled);
                 }}
               >
-                {endpointEnabled ? "禁用接口" : "启用接口"}
+                {endpointEnabled ? messages.disableEndpoint : messages.enableEndpoint}
               </ContextMenuItem>
               <ContextMenuItem
                 disabled={!endpoint}
                 onClick={() => {
                   if (!endpoint) return;
                   navigator.clipboard?.writeText(endpoint.overridePath);
-                  sonnerToast.success("已复制接口路径");
+                  sonnerToast.success(messages.copiedEndpointPath);
                 }}
               >
-                复制接口路径
+                {messages.copyEndpointPath}
               </ContextMenuItem>
               <ContextMenuItem
                 disabled={!endpoint}
@@ -3173,7 +3352,7 @@ function DirectoryNode({
                   if (endpoint) onRequestDeleteEndpoint(endpoint);
                 }}
               >
-                删除接口
+                {messages.deleteEndpoint}
               </ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
@@ -3200,7 +3379,7 @@ function DirectoryNode({
         style={{ "--tree-indent": `${Math.max(0, node.depth) * 14}px` } as CSSProperties}
       >
         <Button
-          aria-label={expanded ? "收起目录" : "展开目录"}
+          aria-label={expanded ? messages.collapse : messages.expand}
           className={cn("source-disclosure", expanded && "expanded", !hasChildren && "empty")}
           disabled={!hasChildren}
           onClick={(event) => {
@@ -3268,7 +3447,7 @@ function DirectoryNode({
                 className={cn("source-count", node.custom && node.count === 0 && "empty")}
                 variant="secondary"
               >
-                {node.custom && node.count === 0 ? "新" : node.count}
+                {node.custom && node.count === 0 ? messages.newBadge : node.count}
               </Badge>
             </button>
           </ContextMenuTrigger>
@@ -3276,16 +3455,16 @@ function DirectoryNode({
             <ContextMenuItem
               onClick={() => {
                 navigator.clipboard?.writeText(currentDirectoryPath);
-                sonnerToast.success("已复制目录路径");
+                sonnerToast.success(messages.copiedDirectoryPath);
               }}
             >
-              复制目录路径
+              {messages.copyDirectoryPath}
             </ContextMenuItem>
             <ContextMenuItem onClick={() => send("revealFolder", { path: node.path })}>
-              在访达中显示
+              {messages.showInFinder}
             </ContextMenuItem>
             <ContextMenuItem variant="destructive" onClick={() => onRequestDeleteDirectory(node.path)}>
-              {node.path ? "删除目录" : "清空根目录"}
+              {node.path ? messages.deleteDirectory : messages.clearRoot}
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
@@ -3308,6 +3487,7 @@ function DirectoryNode({
                 dragOverPath={dragOverPath}
                 expandedPaths={expandedPaths}
                 focusedNodeId={focusedNodeId}
+                messages={messages}
                 key={child.id}
                 node={child}
                 overridesFolder={overridesFolder}

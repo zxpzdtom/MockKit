@@ -13,6 +13,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { ChevronDown, FileJson, GripVertical } from "lucide-react";
 import { type CSSProperties, useEffect, useMemo, useState } from "react";
+import type { AppMessages } from "../i18n";
 import type { AiGroupingPreview, Endpoint } from "../types";
 
 const rootId = "__root__";
@@ -39,6 +40,8 @@ type DropTarget =
 
 interface AiGroupingDialogProps {
   endpoints: Endpoint[];
+  messages: AppMessages["aiGrouping"];
+  commonMessages: AppMessages["common"];
   onApply(assignments: Array<{ endpointId: string; groupPath: string }>): void;
   onOpenChange(open: boolean): void;
   open: boolean;
@@ -68,9 +71,19 @@ function createGroupId(path: string) {
   return path || rootId;
 }
 
-function buildTree(endpoints: Endpoint[], preview: AiGroupingPreview | null): GroupingTree {
+function buildTree(
+  endpoints: Endpoint[],
+  preview: AiGroupingPreview | null,
+  messages: AppMessages["aiGrouping"],
+): GroupingTree {
   const groups: Record<string, EditableGroup> = {
-    [rootId]: { id: rootId, label: "建议分组", parentId: null, children: [], endpointIds: [] },
+    [rootId]: {
+      id: rootId,
+      label: messages.suggestedGroupsRoot,
+      parentId: null,
+      children: [],
+      endpointIds: [],
+    },
   };
   const assignmentMap = new Map(
     (preview?.groups ?? []).map((item) => [item.endpointId, cleanGroupPath(item.groupPath)]),
@@ -188,8 +201,16 @@ function createDragPreview(title: string, detail: string, type: DragItem["type"]
   return preview;
 }
 
-export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, preview }: AiGroupingDialogProps) {
-  const [tree, setTree] = useState<GroupingTree>(() => buildTree(endpoints, preview));
+export function AiGroupingDialog({
+  endpoints,
+  messages,
+  commonMessages,
+  onApply,
+  onOpenChange,
+  open,
+  preview,
+}: AiGroupingDialogProps) {
+  const [tree, setTree] = useState<GroupingTree>(() => buildTree(endpoints, preview, messages));
   const [dragItem, setDragItem] = useState<DragItem | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [collapsedGroupIds, setCollapsedGroupIds] = useState<Set<string>>(() => new Set());
@@ -202,11 +223,11 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
 
   useEffect(() => {
     if (!open) return;
-    setTree(buildTree(endpoints, preview));
+    setTree(buildTree(endpoints, preview, messages));
     setDragItem(null);
     setDropTarget(null);
     setCollapsedGroupIds(new Set());
-  }, [endpoints, open, preview]);
+  }, [endpoints, messages, open, preview]);
 
   const setNextDropTarget = (target: DropTarget | null) => {
     setDropTarget((current) => (isSameDropTarget(current, target) ? current : target));
@@ -236,7 +257,7 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
       const next = structuredClone(current);
       const group = next.groups[groupId];
       if (!group) return current;
-      group.label = group.label.trim() || "未命名分组";
+      group.label = group.label.trim() || messages.untitledGroup;
       return next;
     });
   };
@@ -332,7 +353,7 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
     setDragItem(null);
   };
 
-  const renderDropPlaceholder = (target: DropTarget, depth: number, label = "拖到这里") => {
+  const renderDropPlaceholder = (target: DropTarget, depth: number, label = messages.moveEndpointHere) => {
     if (!isSameDropTarget(dropTarget, target) || !canUseDropTarget(dragItem, target)) return null;
     const draggedKind = dragItem?.type ?? "endpoint";
     return (
@@ -379,7 +400,7 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
             {group.children.map((childId) => renderGroup(childId, 0))}
             {group.endpointIds.length > 0 ? (
               <div className="ai-ungrouped-section">
-                <div className="ai-ungrouped-title">未分组</div>
+                <div className="ai-ungrouped-title">{messages.ungrouped}</div>
                 {group.endpointIds.map((endpointId) => {
                   const endpoint = endpointMap.get(endpointId);
                   if (!endpoint) return null;
@@ -411,7 +432,7 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
                   applyDropTarget({ type: "group-end", groupId });
                 }}
               >
-                {renderDropPlaceholder({ type: "group-end", groupId }, 0, "移到计划末尾")}
+                {renderDropPlaceholder({ type: "group-end", groupId }, 0, messages.moveToPlanEnd)}
               </div>
             ) : null}
           </div>
@@ -424,7 +445,7 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
     return (
       <div className="ai-group-node" key={groupId} style={depthStyle(depth)}>
         <div>
-          {renderDropPlaceholder({ type: "group-before", groupId }, depth, "移动分组到这里")}
+          {renderDropPlaceholder({ type: "group-before", groupId }, depth, messages.moveGroupHere)}
           <div
             className={cn(
               "ai-group-row",
@@ -452,7 +473,11 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
             onDragStart={(event) => {
               event.dataTransfer.effectAllowed = "move";
               setDragItem({ type: "group", groupId });
-              const preview = createDragPreview(group.label, `${totalCount} 个接口`, "group");
+              const preview = createDragPreview(
+                group.label,
+                commonMessages.endpointCount(totalCount),
+                "group",
+              );
               event.dataTransfer.setDragImage(preview, 24, 24);
               window.setTimeout(() => preview.remove(), 0);
             }}
@@ -475,7 +500,11 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
                 event.stopPropagation();
                 event.dataTransfer.effectAllowed = "move";
                 setDragItem({ type: "group", groupId });
-                const preview = createDragPreview(group.label, `${totalCount} 个接口`, "group");
+                const preview = createDragPreview(
+                  group.label,
+                  commonMessages.endpointCount(totalCount),
+                  "group",
+                );
                 event.dataTransfer.setDragImage(preview, 24, 24);
                 window.setTimeout(() => preview.remove(), 0);
               }}
@@ -484,7 +513,7 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
             </span>
             <span className="ai-group-color-dot" aria-hidden="true" />
             <Input
-              aria-label="分组名称"
+              aria-label={messages.groupNameAria}
               className="ai-group-name-input"
               value={group.label}
               onBlur={() => normalizeGroupName(groupId)}
@@ -499,7 +528,7 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
               {totalCount}
             </Badge>
             <Button
-              aria-label={isCollapsed ? "展开分组" : "收起分组"}
+              aria-label={isCollapsed ? messages.expandGroup : messages.collapseGroup}
               aria-expanded={!isCollapsed}
               className={cn("ai-group-collapse", isCollapsed && "collapsed")}
               size="icon-xs"
@@ -515,7 +544,7 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
               variant="ghost"
               onClick={() => deleteGroup(groupId)}
             >
-              取消
+              {messages.remove}
             </Button>
           </div>
         </div>
@@ -529,8 +558,8 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
             { type: "group-into", groupId },
             depth + 1,
             dragItem?.type === "group"
-              ? `作为「${group.label || "未命名分组"}」的子分组`
-              : `拖入「${group.label || "未命名分组"}」`,
+              ? messages.asChildGroup(group.label || messages.untitledGroup)
+              : messages.moveIntoGroup(group.label || messages.untitledGroup),
           )}
           {!isCollapsed ? group.children.map((childId) => renderGroup(childId, depth + 1)) : null}
           {!isCollapsed
@@ -542,7 +571,7 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
                     {renderDropPlaceholder(
                       { type: "endpoint-before", endpointId },
                       depth + 1,
-                      "移动接口到这里",
+                      messages.moveEndpointHere,
                     )}
                     <div
                       className={cn(
@@ -595,7 +624,7 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
                         variant="ghost"
                         onClick={() => moveEndpointToGroup(endpointId, rootId)}
                       >
-                        取消
+                        {messages.remove}
                       </Button>
                     </div>
                   </div>
@@ -614,7 +643,7 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
                 applyDropTarget({ type: "group-end", groupId });
               }}
             >
-              {renderDropPlaceholder({ type: "group-end", groupId }, depth + 1, "移动到末尾")}
+              {renderDropPlaceholder({ type: "group-end", groupId }, depth + 1, messages.moveToEnd)}
             </div>
           ) : null}
         </div>
@@ -627,24 +656,22 @@ export function AiGroupingDialog({ endpoints, onApply, onOpenChange, open, previ
       <DialogContent className="grid max-h-[min(760px,calc(100vh-48px))] w-[min(840px,calc(100vw-56px))] max-w-none grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden bg-[color-mix(in_srgb,var(--panel)_98%,white)] sm:max-w-[min(840px,calc(100vw-56px))]">
         <DialogHeader className="pr-10">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <DialogTitle>AI 分组计划</DialogTitle>
+            <DialogTitle>{messages.title}</DialogTitle>
             <Badge className="ai-grouping-summary-badge" variant="secondary">
-              计划内共 {plannedCount} 个接口
+              {messages.plannedCount(plannedCount)}
             </Badge>
           </div>
-          <DialogDescription>
-            AI 已从 {endpoints.length} 个接口建议 {groupCount} 个分组
-          </DialogDescription>
+          <DialogDescription>{messages.description(endpoints.length, groupCount)}</DialogDescription>
         </DialogHeader>
         <ScrollArea className="ai-grouping-tree min-h-[420px] overflow-auto">
           <div className="ai-grouping-tree-content">{renderGroup(rootId)}</div>
         </ScrollArea>
         <DialogFooter>
           <Button variant="secondary" type="button" onClick={() => onOpenChange(false)}>
-            取消
+            {commonMessages.cancel}
           </Button>
           <Button type="button" onClick={() => onApply(collectEndpointAssignments(tree))}>
-            应用分组
+            {messages.apply}
           </Button>
         </DialogFooter>
       </DialogContent>

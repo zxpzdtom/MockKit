@@ -1,72 +1,94 @@
-# MockKit
+<p align="center">
+  <img src="./assets/AppIcon.png" alt="MockKit icon" width="96" height="96">
+</p>
 
-A small native-feeling macOS prototype for managing Chrome DevTools Local Overrides.
+<h1 align="center">MockKit</h1>
 
-The first MVP does not proxy traffic and does not hook `fetch` or `XMLHttpRequest`. It manages the Chrome Overrides folder directly. By default, it targets:
+<p align="center">
+  A native-feeling macOS workspace for managing Chrome DevTools Local Overrides.
+</p>
 
-```text
-/Users/tom/Desktop/mock
-```
+<p align="center">
+  <a href="./README.zh-CN.md">中文文档</a> ·
+  <a href="https://github.com/zxpzdtom/MockKit/issues">Feedback</a> ·
+  <a href="./LICENSE">License</a>
+</p>
 
-## What Works
+MockKit helps frontend developers turn Chrome Local Overrides into a manageable mock workspace. It scans an Overrides folder, groups endpoints, keeps multiple response cases per endpoint, and publishes the active case back to Chrome without running a proxy.
 
-- Bind or choose a Chrome Overrides folder.
-- Scan existing override files into endpoints.
-- Create endpoints and multiple response cases.
-- Create scenarios.
-- Assign a case to the active scenario.
-- Publish the active scenario into the Overrides folder.
-- Disable managed mocks by removing only files previously written by this app.
-- Reveal the Overrides folder in Finder.
+The app does not hook `fetch` or `XMLHttpRequest`. It manages files in the Chrome Overrides folder directly.
 
-The app writes a hidden manifest named:
+## Highlights
+
+- **Chrome Overrides workspace** for binding, scanning, editing, and publishing mock files.
+- **Endpoint groups** with tree and list views for keeping large Overrides folders readable.
+- **Multiple response cases** per endpoint, including quick switching and publish workflows.
+- **cURL import** for creating endpoints from browser or proxy captures.
+- **AI helpers** for endpoint naming, response generation, and business-domain grouping.
+- **Chinese / English UI** with local preference storage.
+- **Theme presets** built from shadcn-style tokens.
+- **CLI support** for scanning, importing, editing, switching cases, publishing, and disabling mocks from terminal scripts.
+- **Local-first storage**. App data and API keys are stored locally by default.
+
+## How It Works
+
+MockKit writes a hidden manifest into the Overrides folder:
 
 ```text
 .mockkit-manifest.json
 ```
 
-That manifest is used to avoid deleting unmanaged files in the Overrides folder.
+The manifest records files managed by MockKit so disabling or publishing mocks does not delete unrelated files in the same Overrides folder.
 
-## Run From Source
+By default, development examples target:
+
+```text
+/Users/tom/Desktop/mock
+```
+
+You can choose another Overrides folder from the app.
+
+## Chrome Setup
+
+1. Open Chrome DevTools.
+2. Go to `Sources` -> `Overrides`.
+3. Select your Overrides folder.
+4. Allow Chrome to access the folder.
+5. Use MockKit to scan, edit, and publish response cases.
+
+Chrome applies Local Overrides only while DevTools is open for the current page.
+
+## Development
 
 ```bash
 pnpm install
-pnpm mac:dev
+pnpm dev
 ```
 
-`pnpm mac:dev` starts Vite at `http://127.0.0.1:5173` and launches the
-macOS shell with `MOCKKIT_FRONTEND_DEV_SERVER` set, so frontend changes update
-through Vite HMR without rebuilding the app bundle. Swift or Rust changes still
-need the relevant process to be rebuilt or restarted.
+`pnpm dev` starts Vite at `http://127.0.0.1:5173` and launches the macOS shell with `MOCKKIT_FRONTEND_DEV_SERVER` set. Frontend changes update through Vite HMR without rebuilding the app bundle.
+
+Swift or Rust changes still require restarting the dev process.
 
 ## CLI
 
-MockKit also ships a command-line interface through the same Rust core used by
-the macOS app. Build it with:
+Build the CLI during development:
 
 ```bash
 cargo build
 ```
 
-During development, run:
+Run commands directly from the debug binary:
 
 ```bash
 ./target/debug/mockkit status
 ./target/debug/mockkit list
 ./target/debug/mockkit show "example.com/api/users"
-./target/debug/mockkit show "example.com/api/users" "成功" --body
 ./target/debug/mockkit scan
 ./target/debug/mockkit publish
-./target/debug/mockkit disable
-./target/debug/mockkit disable "example.com/api/users" --publish
-./target/debug/mockkit disable --group "订单/列表" --publish
-./target/debug/mockkit enable --matching "users" --publish
-./target/debug/mockkit edit "example.com/api/users" --name "用户列表" --description "分页返回用户。"
-./target/debug/mockkit case add "example.com/api/users" --name "空列表" --body-file ./empty-users.json --publish
-./target/debug/mockkit case update "example.com/api/users" "成功" --body-file ./users.json --publish
-./target/debug/mockkit case delete "example.com/api/users" "失败"
 ./target/debug/mockkit import-curl "curl 'https://example.com/api/users'"
-./target/debug/mockkit use "example.com/api/users" "成功" --publish
+./target/debug/mockkit use "example.com/api/users" "Success" --publish
+./target/debug/mockkit disable "example.com/api/users" --publish
+./target/debug/mockkit enable --matching "users" --publish
 ```
 
 After building the app bundle, open MockKit and choose:
@@ -75,27 +97,23 @@ After building the app bundle, open MockKit and choose:
 MockKit -> Install Command Line Tool
 ```
 
-That installs the bundled CLI as `mockkit`, so new terminal windows can run:
+New terminal windows can then run:
 
 ```bash
 mockkit status
 mockkit list
 mockkit show "example.com/api/users"
 mockkit publish
-mockkit disable "example.com/api/users" --publish
-mockkit enable --matching "users" --publish
-mockkit edit "example.com/api/users" --name "用户列表"
-mockkit case update "example.com/api/users" "成功" --body-file ./users.json --publish
-mockkit use "example.com/api/users" "成功" --publish
+mockkit use "example.com/api/users" "Success" --publish
 ```
 
 Useful options:
 
 ```bash
-./target/debug/mockkit --json status
-./target/debug/mockkit --store ./store.json --overrides ./overrides scan
-cat request.curl | ./target/debug/mockkit import-curl --fetch
-cat users.json | ./target/debug/mockkit case update "example.com/api/users" "成功" --body-stdin --publish
+mockkit --json status
+mockkit --store ./store.json --overrides ./overrides scan
+cat request.curl | mockkit import-curl --fetch
+cat users.json | mockkit case update "example.com/api/users" "Success" --body-stdin --publish
 ```
 
 By default, the CLI reads the same store as the app:
@@ -104,32 +122,39 @@ By default, the CLI reads the same store as the app:
 ~/Library/Application Support/MockKit/store.json
 ```
 
-You can override paths with `--store`, `--overrides`, `MOCKKIT_STORE_PATH`, or
-`MOCKKIT_OVERRIDES_FOLDER`.
+Override paths with `--store`, `--overrides`, `MOCKKIT_STORE_PATH`, or `MOCKKIT_OVERRIDES_FOLDER`.
 
-## Build a Mac App Bundle
+## Build
 
 ```bash
 pnpm install
-./scripts/build-app.sh
+pnpm mac:build
 open dist/MockKit.app
 ```
+
+For release builds:
+
+```bash
+pnpm mac:build:release
+```
+
+## Project Structure
+
+```text
+Sources/ChromeOverridesManager/   macOS app shell and bundled frontend resources
+frontend/                         React UI, shadcn-style components, themes, i18n
+src/                              Rust core and CLI
+scripts/                          Dev and app bundle scripts
+assets/                           App icons and icon source images
+```
+
+## Limits
+
+- Chrome Overrides matching follows Chrome's own rules.
+- Status code and headers are stored in the app model, but the first publishing path focuses on response bodies.
+- Same URL with different HTTP methods may not be distinguishable by Chrome Overrides.
+- You may need to refresh the page after publishing a case.
 
 ## License
 
 MIT
-
-## Chrome Setup
-
-1. Open Chrome DevTools.
-2. Go to `Sources` -> `Overrides`.
-3. Select `/Users/tom/Desktop/mock` as the overrides folder.
-4. Allow Chrome to access the folder.
-5. Use this app to scan, edit, and publish mock scenarios.
-
-## MVP Limits
-
-- Chrome Overrides matching rules are still Chrome's rules.
-- Status code and headers are currently notes in the app model; the first version publishes response bodies only.
-- Same URL with different HTTP methods may not be distinguishable by Chrome Overrides.
-- You may need to refresh the page after publishing a scenario.

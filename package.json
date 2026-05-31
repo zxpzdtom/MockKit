@@ -4,6 +4,7 @@
   "private": true,
   "packageManager": "pnpm@10.24.0",
   "scripts": {
+    "dev": "pnpm mac:dev",
     "mac:dev": "./scripts/dev-app.sh",
     "mac:build": "./scripts/build-app.sh",
     "mac:build:release": "./scripts/build-app.sh release",

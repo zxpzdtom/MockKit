@@ -67,6 +67,7 @@ struct Store {
 #[serde(rename_all = "camelCase")]
 struct UiSettings {
     theme: String,
+    language: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1932,6 +1933,7 @@ fn default_store(default_overrides_folder: &str) -> Store {
         }),
         ui_settings: Some(UiSettings {
             theme: "mockkit".to_string(),
+            language: Some("zh-CN".to_string()),
         }),
         group_paths: Some(vec![]),
         endpoints: vec![],
@@ -2208,13 +2210,29 @@ fn import_curl(
     }
 
     let base_override_path = override_path_for_url(&parsed.url);
+    let language = store
+        .ui_settings
+        .as_ref()
+        .and_then(|settings| settings.language.as_deref())
+        .unwrap_or("zh-CN");
+    let imported_case_name = if language == "en-US" {
+        "cURL Import"
+    } else {
+        "cURL 导入"
+    };
+    let imported_description = if language == "en-US" {
+        "Imported from cURL."
+    } else {
+        "从 cURL 导入。"
+    };
+
     if let Some(endpoint) = store.endpoints.iter_mut().find(|endpoint| {
         endpoint.method == parsed.method && endpoint.override_path == base_override_path
     }) {
         let case_id = new_id();
         let mock_case = MockCase {
             id: case_id.clone(),
-            name: unique_case_name(endpoint, "cURL 导入"),
+            name: unique_case_name(endpoint, imported_case_name),
             body: response_body,
             status: response_status,
             headers: response_headers,
@@ -2232,7 +2250,7 @@ fn import_curl(
         method: parsed.method,
         override_path,
         group_path: None,
-        description: "从 cURL 导入。".to_string(),
+        description: imported_description.to_string(),
         tags: vec!["curl".to_string()],
         enabled: Some(true),
         active_case_id: Some(default_case_id.clone()),
@@ -4281,7 +4299,13 @@ fn normalize_store(store: &mut Store) {
     if store.ui_settings.is_none() {
         store.ui_settings = Some(UiSettings {
             theme: "mockkit".to_string(),
+            language: Some("zh-CN".to_string()),
         });
+    }
+    if let Some(settings) = &mut store.ui_settings {
+        if !matches!(settings.language.as_deref(), Some("zh-CN" | "en-US")) {
+            settings.language = Some("zh-CN".to_string());
+        }
     }
     let mut group_paths = store
         .group_paths

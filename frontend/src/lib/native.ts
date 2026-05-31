@@ -17,3 +17,11 @@ declare global {
 export function send(command: string, payload: Omit<NativeMessage, "command"> = {}) {
   window.webkit?.messageHandlers?.native?.postMessage({ command, ...payload });
 }
+
+export function openExternalUrl(url: string) {
+  if (window.webkit?.messageHandlers?.native) {
+    send("openExternal", { url });
+    return;
+  }
+  window.open(url, "_blank", "noopener,noreferrer");
+}

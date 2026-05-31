@@ -3,6 +3,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tooltip } from "@/components/ui/tooltip";
 import { CircleAlert, FolderOpen, List, ListTree, Plus, Sparkles } from "lucide-react";
 import type { ReactNode } from "react";
+import type { AppMessages } from "../i18n";
 import { send } from "../lib/native";
 import { cn } from "../lib/utils";
 
@@ -12,6 +13,7 @@ interface AppSidebarProps {
   children: ReactNode;
   directoryViewMode: "tree" | "flat";
   aiGroupingEnabled: boolean;
+  messages: AppMessages["sidebar"];
   mockEnabled: boolean;
   onAiGroup(): void;
   onCreateGroup(): void;
@@ -24,6 +26,7 @@ export function AppSidebar({
   children,
   directoryViewMode,
   aiGroupingEnabled,
+  messages,
   mockEnabled,
   onAiGroup,
   onCreateGroup,
@@ -42,31 +45,29 @@ export function AppSidebar({
     <aside className="flex h-full min-w-[232px] flex-col bg-[var(--sidebar)] backdrop-blur-[18px] backdrop-saturate-[1.1]">
       <div className="native-drag-region h-[46px]" data-native-drag-region="true" />
       <section className="px-3.5 pb-4">
-        <div className={panelLabelClass}>LOCAL OVERRIDES</div>
+        <div className={panelLabelClass}>{messages.localOverrides}</div>
         <div className="mt-[7px] flex min-h-7 items-center justify-between gap-2.5">
-          <div className="text-sm font-[680]">工作区</div>
+          <div className="text-sm font-[680]">{messages.workspace}</div>
           <div className="workspace-switch-cluster">
-            <Tooltip
-              content="仅当 Chrome 已开启 Local Overrides，且当前页面打开了开发者面板时，这个开关才会生效。"
-              side="bottom"
-              align="end"
-              sideOffset={7}
-            >
+            <Tooltip content={messages.globalMockHint} side="bottom" align="end" sideOffset={7}>
               <span
-                aria-label="全局 Mock 生效条件"
+                aria-label={messages.globalMockConditionAria}
                 className="workspace-switch-hint"
                 role="img"
-                tabIndex={0}
               >
                 <CircleAlert size={14} strokeWidth={1.9} />
               </span>
             </Tooltip>
-            <Switch aria-label="全局 Mock" checked={mockEnabled} onCheckedChange={onMockEnabledChange} />
+            <Switch
+              aria-label={messages.globalMockAria}
+              checked={mockEnabled}
+              onCheckedChange={onMockEnabledChange}
+            />
           </div>
         </div>
         <div className="mt-[3px] grid grid-cols-[minmax(0,1fr)_28px] items-center gap-[7px]">
           <div className="truncate text-xs text-[var(--muted)]">{overridesFolder}</div>
-          <Tooltip content="在访达中打开">
+          <Tooltip content={messages.revealFolder}>
             <Button
               className="grid h-7 w-[30px] place-items-center rounded-[7px] border-[var(--border-soft)] bg-[color-mix(in_srgb,var(--panel)_70%,transparent)] text-[var(--muted)] shadow-[var(--control-shadow)] hover:border-[var(--border-soft)] hover:bg-[color-mix(in_srgb,var(--panel-3)_78%,transparent)] active:scale-95"
               size="icon-sm"
@@ -82,12 +83,12 @@ export function AppSidebar({
 
       <section className="source-list">
         <div className="source-section-row">
-          <div className={panelLabelClass}>目录</div>
+          <div className={panelLabelClass}>{messages.directory}</div>
           {aiGroupingEnabled ? (
-            <Tooltip content="AI 自动分组" {...sourceActionTooltipProps}>
+            <Tooltip content={messages.aiAutoGroup} {...sourceActionTooltipProps}>
               <span className="source-tooltip-trigger">
                 <Button
-                  aria-label="AI 自动分组"
+                  aria-label={messages.aiAutoGroup}
                   className="source-add-button source-ai-button"
                   size="icon-xs"
                   variant="ghost"
@@ -99,10 +100,10 @@ export function AppSidebar({
               </span>
             </Tooltip>
           ) : null}
-          <Tooltip content="新建业务分组" {...sourceActionTooltipProps}>
+          <Tooltip content={messages.createGroup} {...sourceActionTooltipProps}>
             <span className="source-tooltip-trigger">
               <Button
-                aria-label="新建业务分组"
+                aria-label={messages.createGroup}
                 className="source-add-button"
                 size="icon-xs"
                 variant="ghost"
@@ -113,11 +114,11 @@ export function AppSidebar({
               </Button>
             </span>
           </Tooltip>
-          <fieldset className="source-view-toggle" aria-label="目录视图">
-            <Tooltip content="树状目录" {...sourceActionTooltipProps}>
+          <fieldset className="source-view-toggle" aria-label={messages.directoryView}>
+            <Tooltip content={messages.treeDirectory} {...sourceActionTooltipProps}>
               <span className="source-tooltip-trigger">
                 <Button
-                  aria-label="树状目录"
+                  aria-label={messages.treeDirectory}
                   aria-pressed={directoryViewMode === "tree"}
                   className={cn("source-view-button", directoryViewMode === "tree" && "active")}
                   size="icon-xs"
@@ -129,10 +130,10 @@ export function AppSidebar({
                 </Button>
               </span>
             </Tooltip>
-            <Tooltip content="合并空目录" {...sourceActionTooltipProps}>
+            <Tooltip content={messages.flattenEmptyDirs} {...sourceActionTooltipProps}>
               <span className="source-tooltip-trigger">
                 <Button
-                  aria-label="合并空目录"
+                  aria-label={messages.flattenEmptyDirs}
                   aria-pressed={directoryViewMode === "flat"}
                   className={cn("source-view-button", directoryViewMode === "flat" && "active")}
                   size="icon-xs"

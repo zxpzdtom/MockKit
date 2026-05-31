@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { FileSearch2, Plus, Search } from "lucide-react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { toast as sonnerToast } from "sonner";
+import type { AppMessages } from "../i18n";
 import type { Endpoint, EndpointSearchMatch } from "../types";
 
 const endpointRowBadgeClass =
@@ -27,6 +28,8 @@ interface EndpointListPanelProps {
   endpointSearchMatches: Map<string, EndpointSearchMatch>;
   endpoints: Endpoint[];
   filteredEndpoints: Endpoint[];
+  messages: AppMessages["endpointList"];
+  commonMessages: AppMessages["common"];
   getEndpointContextIds(endpoint: Endpoint): string[];
   onAddEndpoint(): void;
   onClearSelection(): void;
@@ -56,6 +59,8 @@ export function EndpointListPanel({
   endpointSearchMatches,
   endpoints,
   filteredEndpoints,
+  messages,
+  commonMessages,
   getEndpointContextIds,
   onAddEndpoint,
   onClearSelection,
@@ -92,24 +97,24 @@ export function EndpointListPanel({
             strokeWidth={1.7}
           />
           <Input
-            aria-label="搜索接口"
+            aria-label={messages.searchEndpoint}
             autoComplete="off"
             className="h-8 rounded-lg border-[var(--border)] bg-[color-mix(in_srgb,var(--panel)_82%,var(--panel-2))] pl-8 pr-[34px] text-[var(--text)]"
             enterKeyHint="search"
             id="endpoint-search-input"
             onChange={(event) => onQueryChange(event.target.value)}
-            placeholder={searchRegexEnabled ? "输入正则表达式" : "搜索接口、路径、说明或响应体"}
+            placeholder={searchRegexEnabled ? messages.searchRegexPlaceholder : messages.searchPlaceholder}
             title="Command/Ctrl+F"
             type="text"
             value={query}
           />
           <Tooltip
-            content={searchRegexEnabled ? "关闭正则搜索" : "开启正则搜索"}
+            content={searchRegexEnabled ? messages.regexOn : messages.regexOff}
             {...endpointActionTooltipProps}
           >
             <span className="absolute right-[5px] top-1/2 z-[1] inline-flex -translate-y-1/2">
               <Button
-                aria-label="正则搜索"
+                aria-label={messages.regexAria}
                 aria-pressed={searchRegexEnabled}
                 className={cn(
                   "grid size-[23px] place-items-center rounded-md border-0 bg-transparent p-0 font-mono text-[11px] font-bold tracking-[-0.04em] text-[var(--muted)] outline-none transition-[background-color,color,box-shadow,transform] duration-[120ms] hover:bg-[color-mix(in_srgb,var(--panel-3)_82%,transparent)] hover:text-[var(--text)] active:scale-95 focus-visible:shadow-[0_0_0_2px_color-mix(in_srgb,var(--accent)_22%,transparent)]",
@@ -126,7 +131,7 @@ export function EndpointListPanel({
             </span>
           </Tooltip>
         </div>
-        <Tooltip content="新增接口" {...endpointActionTooltipProps}>
+        <Tooltip content={messages.addEndpoint} {...endpointActionTooltipProps}>
           <span className="inline-flex">
             <Button
               className="text-[var(--accent)]"
@@ -134,7 +139,7 @@ export function EndpointListPanel({
               variant="outline"
               type="button"
               onClick={onAddEndpoint}
-              aria-label="新增接口"
+              aria-label={messages.addEndpoint}
             >
               <Plus size={16} strokeWidth={2} />
             </Button>
@@ -143,18 +148,18 @@ export function EndpointListPanel({
         {selectedEndpointCount > 0 ? (
           <div className="col-span-full flex min-h-8 items-center justify-between gap-1.5 rounded-lg border border-[color-mix(in_srgb,var(--accent)_24%,var(--border))] bg-[color-mix(in_srgb,var(--accent)_8%,var(--panel))] py-[3px] pl-2 pr-1 text-xs text-[var(--muted)] shadow-[inset_0_1px_0_rgba(255,255,255,0.58)]">
             <span className="min-w-0 truncate font-[560] tabular-nums text-[color-mix(in_srgb,var(--text)_72%,var(--muted))]">
-              已选择 {selectedEndpointCount} 个接口
+              {commonMessages.selectedEndpointCount(selectedEndpointCount)}
             </span>
             <div className="inline-flex flex-none items-center gap-0.5">
               <Button
-                aria-label="取消选择"
+                aria-label={messages.clearSelection}
                 className="h-[26px] min-h-[26px] gap-1 rounded-[7px] px-[7px] text-xs font-[560] leading-none text-[var(--muted)] hover:bg-[color-mix(in_srgb,var(--panel)_72%,transparent)] hover:text-[var(--text)] [&_svg]:block [&_svg]:size-3"
                 size="sm"
                 variant="ghost"
                 type="button"
                 onClick={onClearSelection}
               >
-                取消
+                {messages.clear}
               </Button>
               <Button
                 className="h-[26px] min-h-[26px] gap-1 rounded-[7px] px-[7px] text-xs font-[560] leading-none text-[var(--danger)] hover:bg-[color-mix(in_srgb,var(--danger)_9%,transparent)] hover:text-[var(--danger)] [&_svg]:block [&_svg]:size-3"
@@ -163,7 +168,7 @@ export function EndpointListPanel({
                 type="button"
                 onClick={onDeleteSelectedEndpoints}
               >
-                删除
+                {messages.delete}
               </Button>
             </div>
           </div>
@@ -202,7 +207,7 @@ export function EndpointListPanel({
                     }}
                   >
                     <Checkbox
-                      aria-label={`选择接口 ${item.name}`}
+                      aria-label={messages.selectEndpoint(item.name)}
                       checked={selected}
                       className="endpoint-row-checkbox"
                       onCheckedChange={(checked) => onToggleEndpointSelection(item.id, checked === true)}
@@ -222,11 +227,15 @@ export function EndpointListPanel({
                           {responseMatch.caseName}
                         </span>
                         <span className="row-response-match-snippet">
-                          {responseMatch.snippet || "响应体命中"}
+                          {responseMatch.snippet || messages.responseBodyMatch}
                         </span>
                       </span>
                     ) : null}
-                    <Tooltip content={item.enabled === false ? "已禁用" : scenario?.name || "无返回"}>
+                    <Tooltip
+                      content={
+                        item.enabled === false ? messages.disabled : scenario?.name || messages.noResponse
+                      }
+                    >
                       <Badge
                         className={cn(
                           endpointRowBadgeClass,
@@ -236,7 +245,7 @@ export function EndpointListPanel({
                         variant={item.enabled === false ? "secondary" : "default"}
                       >
                         <span className="min-w-0 truncate">
-                          {item.enabled === false ? "已禁用" : scenario?.name || "无返回"}
+                          {item.enabled === false ? messages.disabled : scenario?.name || messages.noResponse}
                         </span>
                       </Badge>
                     </Tooltip>
@@ -245,24 +254,24 @@ export function EndpointListPanel({
               </ContextMenuTrigger>
               <ContextMenuContent className="app-context-menu">
                 <ContextMenuItem onClick={() => onRevealEndpointDirectory(item)}>
-                  在目录中定位
+                  {messages.revealInDirectory}
                 </ContextMenuItem>
                 <ContextMenuItem
                   onClick={() => onSetEndpointIdsEnabled(contextEndpointIds, !contextAllEnabled)}
                 >
-                  {contextAllEnabled ? "禁用" : "启用"}
-                  {contextCount > 1 ? ` ${contextCount} 个接口` : "接口"}
+                  {contextAllEnabled ? messages.disable : messages.enable}
+                  {messages.endpointNoun(contextCount)}
                 </ContextMenuItem>
                 <ContextMenuItem
                   onClick={() => {
                     navigator.clipboard?.writeText(item.overridePath);
-                    sonnerToast.success("已复制接口路径");
+                    sonnerToast.success(messages.copiedEndpointPath);
                   }}
                 >
-                  复制接口路径
+                  {messages.copyEndpointPath}
                 </ContextMenuItem>
                 <ContextMenuItem variant="destructive" onClick={() => onRequestDeleteEndpoint(item)}>
-                  删除{contextCount > 1 ? ` ${contextCount} 个接口` : "接口"}
+                  {messages.deleteEndpoint(contextCount)}
                 </ContextMenuItem>
               </ContextMenuContent>
             </ContextMenu>
@@ -270,7 +279,7 @@ export function EndpointListPanel({
         })}
       </ScrollArea>
       <div className="flex min-w-0 items-center truncate border-t border-[var(--border-soft)] px-3 text-xs text-[var(--muted)]">
-        {filteredEndpoints.length} 个接口 · {selectedDirectoryLabel}
+        {messages.footer(filteredEndpoints.length, selectedDirectoryLabel)}
       </div>
     </section>
   );

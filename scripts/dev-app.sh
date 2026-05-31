@@ -2,20 +2,20 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FRONTEND_URL="${MOCKKIT_FRONTEND_DEV_SERVER:-http://127.0.0.1:5173}"
+FRONTEND_URL="http://localhost:5173"
 
 cd "$ROOT"
 
 run_frontend() {
   case "${npm_config_user_agent:-}" in
     pnpm/*)
-      pnpm --dir frontend run dev -- --host 127.0.0.1 --port 5173 --strictPort
+      pnpm --dir frontend run dev --host localhost --port 5173 --strictPort
       ;;
     yarn/*)
-      yarn --cwd frontend dev --host 127.0.0.1 --port 5173 --strictPort
+      yarn --cwd frontend dev --host localhost --port 5173 --strictPort
       ;;
     *)
-      npm run dev --prefix frontend -- --host 127.0.0.1 --port 5173 --strictPort
+      npm run dev --prefix frontend -- --host localhost --port 5173 --strictPort
       ;;
   esac
 }

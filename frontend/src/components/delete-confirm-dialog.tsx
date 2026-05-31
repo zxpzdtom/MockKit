@@ -7,6 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import type { AppMessages } from "../i18n";
 
 export type DeleteDialogTarget =
   | { type: "endpoint"; endpointId: string; name: string }
@@ -17,29 +18,37 @@ export type DeleteDialogTarget =
 interface DeleteConfirmDialogProps {
   onConfirm(): void;
   onOpenChange(open: boolean): void;
+  messages: AppMessages["deleteConfirm"];
+  commonMessages: AppMessages["common"];
   target: DeleteDialogTarget | null;
 }
 
-function deleteTitle(target: DeleteDialogTarget) {
-  if (target.type === "case") return "删除返回场景？";
-  if (target.type === "bulk") return "批量删除接口？";
-  if (target.type === "directory" && !target.path) return "清空根目录？";
-  if (target.type === "directory") return "删除目录？";
-  return "删除接口？";
+function deleteTitle(target: DeleteDialogTarget, messages: AppMessages["deleteConfirm"]) {
+  if (target.type === "case") return messages.caseTitle;
+  if (target.type === "bulk") return messages.bulkTitle;
+  if (target.type === "directory" && !target.path) return messages.clearRootTitle;
+  if (target.type === "directory") return messages.directoryTitle;
+  return messages.endpointTitle;
 }
 
-function deleteDescription(target: DeleteDialogTarget) {
-  if (target.type === "case") return `确定删除返回场景「${target.name}」吗？`;
-  if (target.type === "bulk") return `确定删除选中的 ${target.count} 个接口吗？`;
+function deleteDescription(target: DeleteDialogTarget, messages: AppMessages["deleteConfirm"]) {
+  if (target.type === "case") return messages.caseDescription(target.name);
+  if (target.type === "bulk") return messages.bulkDescription(target.count);
   if (target.type === "directory") {
-    if (!target.path) return `确定删除根目录下的 ${target.count} 个接口和所有分组吗？根目录本身会保留。`;
-    if (target.count === 0) return `确定删除空目录「${target.name}」吗？`;
-    return `确定删除目录「${target.name}」及其中的 ${target.count} 个接口吗？`;
+    if (!target.path) return messages.clearRootDescription(target.count);
+    if (target.count === 0) return messages.emptyDirectoryDescription(target.name);
+    return messages.directoryDescription(target.name, target.count);
   }
-  return `确定删除接口「${target.name}」吗？`;
+  return messages.endpointDescription(target.name);
 }
 
-export function DeleteConfirmDialog({ onConfirm, onOpenChange, target }: DeleteConfirmDialogProps) {
+export function DeleteConfirmDialog({
+  onConfirm,
+  onOpenChange,
+  messages,
+  commonMessages,
+  target,
+}: DeleteConfirmDialogProps) {
   return (
     <Dialog open={Boolean(target)} onOpenChange={(open) => !open && onOpenChange(false)}>
       <DialogContent
@@ -53,17 +62,17 @@ export function DeleteConfirmDialog({ onConfirm, onOpenChange, target }: DeleteC
         {target ? (
           <>
             <DialogHeader className="pr-10">
-              <DialogTitle>{deleteTitle(target)}</DialogTitle>
+              <DialogTitle>{deleteTitle(target, messages)}</DialogTitle>
               <DialogDescription className="pt-0.5 text-[14px] leading-6 text-[var(--muted)] [overflow-wrap:anywhere]">
-                {deleteDescription(target)}
+                {deleteDescription(target, messages)}
               </DialogDescription>
             </DialogHeader>
             <DialogFooter className="pt-1 [&_[data-slot=button]]:h-9 [&_[data-slot=button]]:min-w-[76px] [&_[data-variant=destructive]]:bg-[color-mix(in_srgb,var(--danger)_9%,transparent)] [&_[data-variant=destructive]]:text-[var(--danger)] hover:[&_[data-variant=destructive]]:bg-[var(--danger)] hover:[&_[data-variant=destructive]]:text-white">
               <Button variant="secondary" type="button" onClick={() => onOpenChange(false)}>
-                取消
+                {commonMessages.cancel}
               </Button>
               <Button variant="destructive" type="button" onClick={onConfirm}>
-                删除
+                {commonMessages.delete}
               </Button>
             </DialogFooter>
           </>

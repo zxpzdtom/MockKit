@@ -18,6 +18,7 @@ struct Store: Codable {
 
 struct UiSettings: Codable {
     var theme: String
+    var language: String?
 }
 
 struct AiSettings: Codable {
@@ -611,7 +612,7 @@ final class StoreController {
     }
 
     func defaultUiSettings() -> UiSettings {
-        UiSettings(theme: "mockkit")
+        UiSettings(theme: "mockkit", language: "zh-CN")
     }
 
     private func defaultStore() -> Store {
@@ -689,6 +690,14 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                 sendResult(message: "Mock 已禁用，托管文件已移除。")
             case "revealFolder":
                 storeController.revealOverridesFolder(store: store, relativePath: payload["path"] as? String)
+            case "openExternal":
+                guard let urlString = payload["url"] as? String,
+                      let url = URL(string: urlString),
+                      ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+                    sendError("无法打开链接。")
+                    return
+                }
+                NSWorkspace.shared.open(url)
             case "refreshChromeProfile":
                 var nextStore = store
                 try storeController.refreshChromeProfile(store: &nextStore)

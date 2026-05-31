@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { ChevronRight, FileJson, FolderOpen, Loader2, Sparkles } from "lucide-react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { AppMessages } from "../i18n";
 import type { Endpoint } from "../types";
 
 type ScopePreset = "ungrouped" | "selected" | "directory" | "all" | "custom";
@@ -26,6 +27,8 @@ interface AiGroupingScopeDialogProps {
   endpoints: Endpoint[];
   expandedDirectoryPaths: Set<string>;
   generating: boolean;
+  messages: AppMessages["aiGroupingScope"];
+  commonMessages: AppMessages["common"];
   onGenerate(endpoints: Endpoint[]): void;
   onOpenChange(open: boolean): void;
   open: boolean;
@@ -52,12 +55,12 @@ function cleanGroupPath(path: string) {
     .join("/");
 }
 
-function buildScopeTree(endpoints: Endpoint[]) {
+function buildScopeTree(endpoints: Endpoint[], messages: AppMessages["aiGroupingScope"]) {
   const root: ScopeTreeNode = {
     children: [],
     endpoints: [],
     id: ROOT_SCOPE_NODE_ID,
-    label: "全部接口",
+    label: messages.allEndpoints,
     path: "",
   };
   const nodesByPath = new Map<string, ScopeTreeNode>([["", root]]);
@@ -71,7 +74,7 @@ function buildScopeTree(endpoints: Endpoint[]) {
     return node;
   };
 
-  const ensureUngroupedNode = () => ensureNode(UNGROUPED_SCOPE_NODE_ID, "未分组", root);
+  const ensureUngroupedNode = () => ensureNode(UNGROUPED_SCOPE_NODE_ID, messages.ungrouped, root);
 
   for (const endpoint of endpoints) {
     const groupPath = cleanGroupPath(endpoint.groupPath ?? "");
@@ -199,6 +202,8 @@ export function AiGroupingScopeDialog({
   endpoints,
   expandedDirectoryPaths,
   generating,
+  messages,
+  commonMessages,
   onGenerate,
   onOpenChange,
   open,
@@ -234,7 +239,7 @@ export function AiGroupingScopeDialog({
   const [checkedIds, setCheckedIds] = useState<Set<string>>(
     () => new Set(ungroupedIds.length > 0 ? ungroupedIds : endpoints.map((item) => item.id)),
   );
-  const scopeTree = useMemo(() => buildScopeTree(endpoints), [endpoints]);
+  const scopeTree = useMemo(() => buildScopeTree(endpoints, messages), [endpoints, messages]);
   const defaultExpandedNodeIds = useMemo(
     () => defaultExpandedScopeNodeIds(scopeTree.children, expandedDirectoryPaths),
     [expandedDirectoryPaths, scopeTree],
@@ -427,24 +432,22 @@ export function AiGroupingScopeDialog({
         }}
       >
         <DialogHeader className="pr-10">
-          <DialogTitle>选择 AI 分组范围</DialogTitle>
-          <DialogDescription>
-            先选择要交给 AI 整理的接口；已有分组会作为上下文帮助复用目录。
-          </DialogDescription>
+          <DialogTitle>{messages.title}</DialogTitle>
+          <DialogDescription>{messages.description}</DialogDescription>
         </DialogHeader>
         <div className="grid grid-cols-[repeat(auto-fit,minmax(128px,1fr))] gap-2">
           <ScopeButton
             active={preset === "ungrouped"}
-            count={ungroupedIds.length}
-            label="未分组"
+            countLabel={commonMessages.endpointCount(ungroupedIds.length)}
+            label={messages.ungrouped}
             disabled={generating}
             onClick={() => applyPreset("ungrouped")}
           />
           {showSelectedPreset ? (
             <ScopeButton
               active={preset === "selected"}
-              count={selectedIds.length}
-              label="已选接口"
+              countLabel={commonMessages.endpointCount(selectedIds.length)}
+              label={messages.selectedEndpoints}
               disabled={generating}
               onClick={() => applyPreset("selected")}
             />
@@ -452,16 +455,16 @@ export function AiGroupingScopeDialog({
           {showDirectoryPreset ? (
             <ScopeButton
               active={preset === "directory"}
-              count={directoryIds.length}
-              label="当前目录"
+              countLabel={commonMessages.endpointCount(directoryIds.length)}
+              label={messages.currentDirectory}
               disabled={generating}
               onClick={() => applyPreset("directory")}
             />
           ) : null}
           <ScopeButton
             active={preset === "all"}
-            count={endpoints.length}
-            label="全部接口"
+            countLabel={commonMessages.endpointCount(endpoints.length)}
+            label={messages.allEndpoints}
             disabled={generating}
             onClick={() => applyPreset("all")}
           />
@@ -470,7 +473,7 @@ export function AiGroupingScopeDialog({
           <div
             className="scope-tree"
             role="tree"
-            aria-label="接口分组树"
+            aria-label={messages.treeAria}
             aria-activedescendant={focusedNodeKey ? scopeTreeDomId(focusedNodeKey) : undefined}
             // biome-ignore lint/a11y/noNoninteractiveTabindex: This tree uses aria-activedescendant keyboard navigation.
             tabIndex={0}
@@ -484,6 +487,7 @@ export function AiGroupingScopeDialog({
                 expandedNodeIds={expandedNodeIds}
                 focusedNodeKey={focusedNodeKey}
                 key={node.id}
+                messages={messages}
                 node={node}
                 onToggleExpanded={toggleExpandedNode}
                 onToggleEndpoint={toggleEndpoint}
@@ -494,7 +498,7 @@ export function AiGroupingScopeDialog({
             ))}
             {scopeTree.children.length === 0 ? (
               <div className="grid min-h-[220px] place-items-center text-sm text-[var(--muted)]">
-                暂无可分组接口
+                {messages.empty}
               </div>
             ) : null}
           </div>
@@ -502,10 +506,10 @@ export function AiGroupingScopeDialog({
         <DialogFooter>
           <div className="mr-auto flex items-center gap-2 text-xs text-[var(--muted)]">
             <Sparkles size={13} />
-            已选择 {selectedEndpoints.length} 个接口
+            {commonMessages.selectedEndpointCount(selectedEndpoints.length)}
           </div>
           <Button variant="secondary" type="button" onClick={() => onOpenChange(false)}>
-            {generating ? "取消生成" : "取消"}
+            {generating ? messages.cancelGeneration : commonMessages.cancel}
           </Button>
           <Button
             type="button"
@@ -515,10 +519,10 @@ export function AiGroupingScopeDialog({
             {generating ? (
               <>
                 <Loader2 className="animate-spin" size={14} />
-                生成中...
+                {messages.generating}
               </>
             ) : (
-              "开始 AI 分组"
+              messages.start
             )}
           </Button>
         </DialogFooter>
@@ -532,6 +536,7 @@ function ScopeTreeNodeRow({
   depth,
   expandedNodeIds,
   focusedNodeKey,
+  messages,
   node,
   onToggleExpanded,
   onToggleEndpoint,
@@ -541,6 +546,7 @@ function ScopeTreeNodeRow({
   depth: number;
   expandedNodeIds: Set<string>;
   focusedNodeKey: string;
+  messages: AppMessages["aiGroupingScope"];
   node: ScopeTreeNode;
   onToggleExpanded(nodeId: string): void;
   onToggleEndpoint(endpointId: string, checked: boolean): void;
@@ -569,7 +575,7 @@ function ScopeTreeNodeRow({
         style={indentStyle}
       >
         <Button
-          aria-label={expanded ? `收起 ${label}` : `展开 ${label}`}
+          aria-label={expanded ? messages.collapse(label) : messages.expand(label)}
           className={cn("scope-tree-disclosure", expanded && "expanded")}
           size="icon-xs"
           type="button"
@@ -603,6 +609,7 @@ function ScopeTreeNodeRow({
               expandedNodeIds={expandedNodeIds}
               focusedNodeKey={focusedNodeKey}
               key={child.id}
+              messages={messages}
               node={child}
               onToggleExpanded={onToggleExpanded}
               onToggleEndpoint={onToggleEndpoint}
@@ -647,11 +654,17 @@ function ScopeTreeNodeRow({
 
 function ScopeButton({
   active,
-  count,
+  countLabel,
   disabled = false,
   label,
   onClick,
-}: { active: boolean; count: number; disabled?: boolean; label: string; onClick(): void }) {
+}: {
+  active: boolean;
+  countLabel: string;
+  disabled?: boolean;
+  label: string;
+  onClick(): void;
+}) {
   return (
     <button
       className={cn(
@@ -664,7 +677,7 @@ function ScopeButton({
       onClick={onClick}
     >
       <span className="text-[13px] font-[680] text-[var(--text)]">{label}</span>
-      <span className="text-xs tabular-nums text-[var(--muted)]">{count} 个接口</span>
+      <span className="text-xs tabular-nums text-[var(--muted)]">{countLabel}</span>
     </button>
   );
 }

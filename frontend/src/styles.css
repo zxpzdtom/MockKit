@@ -727,7 +727,7 @@ textarea {
 }
 .ai-grouping-tree-content {
   min-width: 0;
-  padding: 14px 22px 14px 14px;
+  padding: 16px 30px 18px 20px;
 }
 .ai-grouping-summary-badge {
   height: 28px;
@@ -895,8 +895,8 @@ textarea {
 }
 .ai-group-node:not(.root) > .ai-group-children {
   position: relative;
-  margin-left: 20px;
-  padding-left: 14px;
+  margin-left: 22px;
+  padding-left: 18px;
 }
 .ai-group-node:not(.root) > .ai-group-children.collapsed {
   display: none;
@@ -918,8 +918,8 @@ textarea {
 .ai-group-node:not(.root)::before {
   position: absolute;
   top: 24px;
-  left: 20px;
-  width: 14px;
+  left: 22px;
+  width: 18px;
   height: 1px;
   background: color-mix(in srgb, var(--border) 68%, transparent);
   content: "";
@@ -937,7 +937,7 @@ textarea {
   align-items: center;
   gap: 8px;
   margin: 0;
-  padding: 6px 9px;
+  padding: 6px 10px;
   border-radius: 10px;
   color: var(--text);
   transition-property: background-color, box-shadow, opacity, transform, border-color;
@@ -1044,9 +1044,10 @@ textarea {
 }
 .ai-endpoint-row {
   min-height: 48px;
+  margin-right: 2px;
   border-radius: 8px;
-  background: transparent;
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--border-soft) 72%, transparent);
+  background: color-mix(in srgb, var(--panel) 52%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--border-soft) 78%, transparent);
 }
 .ai-endpoint-row.ungrouped {
   padding-left: 10px;
@@ -1721,7 +1722,7 @@ label span {
   max-width: 190px;
   min-height: 28px;
   padding: 0 12px 0 9px;
-  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 68%, transparent);
   border-radius: 8px;
   background: color-mix(in srgb, var(--panel) 88%, var(--panel-2));
   box-shadow: var(--control-shadow);
@@ -1769,9 +1770,11 @@ label span {
   cursor: default;
 }
 .case-tab-main:focus-visible {
-  border-radius: 6px;
-  outline: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
-  outline-offset: 2px;
+  outline: none;
+}
+.case-tab:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
+  box-shadow: var(--control-shadow), inset 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
 }
 .case-tab-main[data-selected] {
   color: inherit;
@@ -1846,10 +1849,10 @@ label span {
   box-shadow: none !important;
 }
 .case-tab[data-active="true"] {
-  border-color: color-mix(in srgb, var(--accent) 28%, var(--border-soft));
-  background: var(--panel);
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--border-soft));
+  background: color-mix(in srgb, var(--accent-soft) 24%, var(--panel));
   color: var(--text);
-  box-shadow: var(--control-shadow);
+  box-shadow: var(--control-shadow), inset 0 0 0 1px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 .case-tab[data-editing="true"] {
   gap: 0;
@@ -1873,7 +1876,7 @@ label span {
   height: 5px;
   border-radius: 999px;
   background: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: none;
 }
 .code-editor {
   min-height: 0;

@@ -9,10 +9,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import type { AppMessages } from "../i18n";
 
 interface CreateGroupDialogProps {
   cleanGroupPath(path: string): string;
   draft: string;
+  messages: AppMessages["createGroup"];
+  commonMessages: AppMessages["common"];
   onCreate(): void;
   onDraftChange(value: string): void;
   onOpenChange(open: boolean): void;
@@ -22,6 +25,8 @@ interface CreateGroupDialogProps {
 export function CreateGroupDialog({
   cleanGroupPath,
   draft,
+  messages,
+  commonMessages,
   onCreate,
   onDraftChange,
   onOpenChange,
@@ -48,28 +53,28 @@ export function CreateGroupDialog({
           }}
         >
           <DialogHeader className="pr-10">
-            <DialogTitle>新建业务分组</DialogTitle>
-            <DialogDescription>支持多层级目录，例如 用户中心/登录。</DialogDescription>
+            <DialogTitle>{messages.title}</DialogTitle>
+            <DialogDescription>{messages.description}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-2">
-            <Label htmlFor="create-group-path">业务分组路径</Label>
+            <Label htmlFor="create-group-path">{messages.label}</Label>
             <Input
               id="create-group-path"
-              aria-label="业务分组路径"
+              aria-label={messages.label}
               autoComplete="off"
               autoFocus
               className="h-10 px-3"
-              placeholder="用户中心/登录"
+              placeholder={messages.placeholder}
               value={draft}
               onChange={(event) => onDraftChange(event.target.value)}
             />
           </div>
           <DialogFooter>
             <Button variant="secondary" type="button" onClick={() => onOpenChange(false)}>
-              取消
+              {commonMessages.cancel}
             </Button>
             <Button type="submit" disabled={!cleanGroupPath(draft)}>
-              新建
+              {messages.create}
             </Button>
           </DialogFooter>
         </form>

@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import type { AppMessages } from "../i18n";
 
 const CURL_PLACEHOLDER = `curl 'https://example.com/api/user/profile' \\
   -H 'accept: application/json' \\
@@ -23,6 +24,8 @@ interface ImportCurlDialogProps {
   curlFetchResponse: boolean;
   curlText: string;
   importingCurl: boolean;
+  messages: AppMessages["importCurl"];
+  commonMessages: AppMessages["common"];
   onCurlFetchResponseChange(value: boolean): void;
   onCurlTextChange(value: string): void;
   onImport(): void;
@@ -34,6 +37,8 @@ export function ImportCurlDialog({
   curlFetchResponse,
   curlText,
   importingCurl,
+  messages,
+  commonMessages,
   onCurlFetchResponseChange,
   onCurlTextChange,
   onImport,
@@ -41,7 +46,7 @@ export function ImportCurlDialog({
   open,
 }: ImportCurlDialogProps) {
   const editorViewRef = useRef<EditorView | null>(null);
-  const importingMessage = curlFetchResponse ? "正在请求接口并保存响应..." : "正在解析 cURL...";
+  const importingMessage = curlFetchResponse ? messages.fetching : messages.parsing;
   const focusEditor = useCallback(() => {
     window.requestAnimationFrame(() => editorViewRef.current?.focus());
   }, []);
@@ -114,13 +119,13 @@ export function ImportCurlDialog({
         }}
       >
         <DialogHeader className="pr-11">
-          <DialogTitle>导入 cURL</DialogTitle>
-          <DialogDescription>粘贴从 DevTools 复制出来的 cURL，自动生成 Override 接口。</DialogDescription>
+          <DialogTitle>{messages.title}</DialogTitle>
+          <DialogDescription>{messages.description}</DialogDescription>
         </DialogHeader>
         <div className="grid min-w-0 gap-3">
           <div className="curl-code-editor relative h-[210px]">
             <CodeMirror
-              aria-label="cURL 内容"
+              aria-label={messages.contentAria}
               className="scroll-mask-y-direct-4"
               basicSetup={{
                 autocompletion: false,
@@ -155,18 +160,16 @@ export function ImportCurlDialog({
           <div className="flex items-center gap-[9px] text-[13px] text-[var(--text)]">
             <Checkbox
               id="curl-fetch-response"
-              aria-label="请求接口并保存为场景"
+              aria-label={messages.fetchResponseAria}
               checked={curlFetchResponse}
               disabled={importingCurl}
               onCheckedChange={(value) => onCurlFetchResponseChange(value === true)}
             />
             <Label className="cursor-default text-[13px] font-normal leading-5" htmlFor="curl-fetch-response">
-              请求接口，并把响应体保存为新场景
+              {messages.fetchResponse}
             </Label>
           </div>
-          <div className="text-[13px] leading-5 text-[var(--muted)]">
-            未勾选时不会请求接口，只导入路径和请求信息，并生成一个 Default 场景。
-          </div>
+          <div className="text-[13px] leading-5 text-[var(--muted)]">{messages.fetchResponseHint}</div>
         </div>
         <DialogFooter className="pt-0">
           <Button
@@ -175,7 +178,7 @@ export function ImportCurlDialog({
             disabled={importingCurl}
             onClick={() => onOpenChange(false)}
           >
-            取消
+            {commonMessages.cancel}
           </Button>
           <Button
             type="button"
@@ -187,10 +190,10 @@ export function ImportCurlDialog({
             {importingCurl ? (
               <>
                 <Loader2 className="animate-spin" size={14} />
-                {curlFetchResponse ? "请求中" : "导入中"}
+                {curlFetchResponse ? messages.requesting : messages.importing}
               </>
             ) : (
-              "导入"
+              commonMessages.import
             )}
           </Button>
         </DialogFooter>

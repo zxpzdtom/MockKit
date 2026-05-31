@@ -3,12 +3,12 @@ export function formatJson(value: string) {
 }
 
 export function getJsonStatus(value: string) {
-  if (!value.trim()) return { valid: true, message: "文本" };
+  if (!value.trim()) return { valid: true, kind: "text" as const };
   try {
     JSON.parse(value || "");
-    return { valid: true, message: "JSON 有效" };
+    return { valid: true, kind: "json" as const };
   } catch {
-    return { valid: true, message: "文本" };
+    return { valid: true, kind: "text" as const };
   }
 }
 

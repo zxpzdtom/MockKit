@@ -7,6 +7,7 @@ export default defineConfig({
     react(),
     {
       name: "classic-script-for-wkwebview-file-url",
+      apply: "build",
       transformIndexHtml(html) {
         return html
           .replace(/<script type="module" crossorigin/g, "<script defer")
