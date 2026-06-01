@@ -480,6 +480,7 @@ const settingsCopy = {
     groupingPromptPlaceholder: "输入 AI 分组 Prompt",
     aboutDescription: "MockKit 是一个面向 Chrome Local Overrides 的本机 Mock 工作台。",
     version: "版本",
+    checkForUpdates: "检查更新",
     sourceCode: "开源地址",
     feedback: "问题反馈",
     license: "许可证",
@@ -551,6 +552,7 @@ const settingsCopy = {
     groupingPromptPlaceholder: "Enter the AI grouping prompt",
     aboutDescription: "MockKit is a native mock workspace for Chrome Local Overrides.",
     version: "Version",
+    checkForUpdates: "Check for Updates",
     sourceCode: "Source Code",
     feedback: "Feedback",
     license: "License",
@@ -585,6 +587,7 @@ interface AppSettingsDialogProps {
   onApiKeyVisibleChange(value: boolean | ((visible: boolean) => boolean)): void;
   onCopyText(text: string): void;
   onInstallCli(): void;
+  onCheckForUpdates(): void;
   onLanguageChange(language: AppLanguage): void;
   onOpenExternal(url: string): void;
   onOpenChange(open: boolean): void;
@@ -610,6 +613,7 @@ export function AppSettingsDialog({
   onApiKeyVisibleChange,
   onCopyText,
   onInstallCli,
+  onCheckForUpdates,
   onLanguageChange,
   onOpenExternal,
   onOpenChange,
@@ -959,6 +963,16 @@ export function AppSettingsDialog({
                       {copy.version} {appVersion}
                     </div>
                   </div>
+                  <Button
+                    className="ml-auto gap-1.5"
+                    size="sm"
+                    type="button"
+                    variant="secondary"
+                    onClick={onCheckForUpdates}
+                  >
+                    <Download size={13} />
+                    {copy.checkForUpdates}
+                  </Button>
                 </div>
                 <div className="grid gap-2">
                   <AboutLink

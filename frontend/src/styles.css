@@ -2101,7 +2101,8 @@ label span {
   border-radius: 6px;
   background: color-mix(in srgb, var(--text) 88%, black);
   color: var(--panel);
-  font: 11px / 1.25 var(--font-sans, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  font: 11px / 1.25
+    var(--font-sans, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
   opacity: 0;
   pointer-events: none;
   transform: translateY(-3px) scale(0.98);
@@ -2382,6 +2383,12 @@ textarea:focus {
   border-radius: 12px;
   box-shadow: 0 14px 36px rgba(22, 20, 18, 0.12), 0 2px 8px rgba(22, 20, 18, 0.06);
 }
+.toaster {
+  z-index: 1000;
+}
+.toaster [data-sonner-toast] {
+  pointer-events: auto;
+}
 .toaster [data-sonner-toast][data-styled="true"] [data-title] {
   line-height: 1.35;
 }
@@ -2394,6 +2401,7 @@ textarea:focus {
 }
 .toast-copy-button {
   position: relative;
+  z-index: 1;
   flex: 0 0 28px;
   align-self: center;
   margin-left: auto;
@@ -2408,6 +2416,7 @@ textarea:focus {
   background: color-mix(in srgb, white 54%, transparent);
   color: currentColor;
   opacity: 0.8;
+  pointer-events: auto;
   transition-property: background-color, border-color, box-shadow, color, opacity, transform;
   transition-duration: 120ms;
   transition-timing-function: cubic-bezier(0.2, 0, 0, 1);

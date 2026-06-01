@@ -32,6 +32,7 @@ frontend/coverage/
 
 # App build output
 dist/
+Sources/ChromeOverridesManager/Resources/
 
 # Local scratch files
 tmp/

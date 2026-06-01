@@ -5,6 +5,9 @@ private let appName = "MockKit"
 private let legacyAppNames = ["Overrides Studio", "Chrome Overrides Manager"]
 private let appDisplayName = "MockKit"
 private let defaultOverridesFolder = "/Users/tom/Desktop/mock"
+private let latestReleaseApiURL = URL(string: "https://api.github.com/repos/zxpzdtom/MockKit/releases/latest")!
+private let updateCheckInterval: TimeInterval = 24 * 60 * 60
+private let lastBackgroundUpdateCheckKey = "MockKit.lastBackgroundUpdateCheck"
 
 struct Store: Codable {
     var overridesFolder: String
@@ -206,6 +209,28 @@ struct CoreResponse: Codable {
     var aiPreview: CoreAiPreview?
     var aiMetadataPreview: CoreAiMetadataPreview?
     var aiGroupingPreview: CoreAiGroupingPreview?
+}
+
+struct GitHubRelease: Decodable {
+    var tagName: String
+    var htmlURL: String
+    var assets: [GitHubReleaseAsset]
+
+    enum CodingKeys: String, CodingKey {
+        case tagName = "tag_name"
+        case htmlURL = "html_url"
+        case assets
+    }
+}
+
+struct GitHubReleaseAsset: Decodable {
+    var name: String
+    var browserDownloadURL: String
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case browserDownloadURL = "browser_download_url"
+    }
 }
 
 final class AiProgressLineParser: @unchecked Sendable {
@@ -431,7 +456,7 @@ final class RustCoreClient {
         }
         if process.isRunning {
             process.terminate()
-            throw NSError(domain: appName, code: 124, userInfo: [NSLocalizedDescriptionKey: "Rust core 执行超时：\(request.command)。"])
+            throw NSError(domain: appName, code: 124, userInfo: [NSLocalizedDescriptionKey: "操作超时：\(request.command)。"])
         }
         process.waitUntilExit()
 
@@ -444,7 +469,7 @@ final class RustCoreClient {
             }
             let message = String(data: errorData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
             throw NSError(domain: appName, code: Int(process.terminationStatus), userInfo: [
-                NSLocalizedDescriptionKey: message?.isEmpty == false ? message! : "Rust core 执行失败。"
+                NSLocalizedDescriptionKey: message?.isEmpty == false ? message! : "操作执行失败。"
             ])
         }
 
@@ -666,6 +691,7 @@ final class Bridge: NSObject, WKScriptMessageHandler {
             switch command {
             case "ready":
                 sendState()
+                checkForUpdates(interactive: false)
             case "saveStore":
                 try saveStore(payload["store"])
             case "scan":
@@ -725,6 +751,8 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                     ? "新终端窗口中可直接运行 mockkit。"
                     : "请将 \(directory) 加入 PATH 后再使用 mockkit。"
                 sendResult(message: "CLI 已安装到 \(result.path)。\(suffix)")
+            case "checkForUpdates":
+                checkForUpdates(interactive: true)
             case "startWindowDrag":
                 startWindowDrag()
             case "toggleZoom":
@@ -735,6 +763,274 @@ final class Bridge: NSObject, WKScriptMessageHandler {
         } catch {
             sendError(error.localizedDescription)
         }
+    }
+
+    private func checkForUpdates(interactive: Bool) {
+        if !interactive {
+            let lastCheck = UserDefaults.standard.object(forKey: lastBackgroundUpdateCheckKey) as? Date
+            if let lastCheck, Date().timeIntervalSince(lastCheck) < updateCheckInterval {
+                return
+            }
+        } else {
+            sendState(message: "正在检查更新...", includeStore: false)
+        }
+
+        let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
+        var request = URLRequest(url: latestReleaseApiURL)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("MockKit", forHTTPHeaderField: "User-Agent")
+
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            if let error {
+                DispatchQueue.main.async {
+                    if !interactive {
+                        UserDefaults.standard.set(Date(), forKey: lastBackgroundUpdateCheckKey)
+                        return
+                    }
+                    self?.sendState(error: "检查更新失败：\(error.localizedDescription)", includeStore: false)
+                }
+                return
+            }
+            guard
+                let httpResponse = response as? HTTPURLResponse,
+                let data
+            else {
+                DispatchQueue.main.async {
+                    if !interactive {
+                        UserDefaults.standard.set(Date(), forKey: lastBackgroundUpdateCheckKey)
+                        return
+                    }
+                    self?.sendState(error: "检查更新失败：无法读取 GitHub Release。", includeStore: false)
+                }
+                return
+            }
+            guard (200..<300).contains(httpResponse.statusCode) else {
+                DispatchQueue.main.async {
+                    if !interactive {
+                        UserDefaults.standard.set(Date(), forKey: lastBackgroundUpdateCheckKey)
+                        return
+                    }
+                    if httpResponse.statusCode == 404 {
+                        self?.sendState(message: "还没有发布 GitHub Release，暂时无法检查更新。", includeStore: false)
+                    } else {
+                        self?.sendState(error: "检查更新失败：GitHub 返回 \(httpResponse.statusCode)。", includeStore: false)
+                    }
+                }
+                return
+            }
+            guard
+                let release = try? JSONDecoder().decode(GitHubRelease.self, from: data),
+                let releaseURL = URL(string: release.htmlURL)
+            else {
+                DispatchQueue.main.async {
+                    if !interactive {
+                        UserDefaults.standard.set(Date(), forKey: lastBackgroundUpdateCheckKey)
+                        return
+                    }
+                    self?.sendState(error: "检查更新失败：无法读取 GitHub Release。", includeStore: false)
+                }
+                return
+            }
+
+            let latestVersion = normalizedVersion(release.tagName)
+            DispatchQueue.main.async {
+                if !interactive {
+                    UserDefaults.standard.set(Date(), forKey: lastBackgroundUpdateCheckKey)
+                }
+                if compareVersions(latestVersion, currentVersion) == .orderedDescending {
+                    guard interactive else {
+                        self?.sendState(message: "发现新版本 \(release.tagName)，可在关于页检查更新下载。", includeStore: false)
+                        return
+                    }
+                    self?.downloadUpdate(from: release, fallbackURL: releaseURL)
+                } else if interactive {
+                    self?.sendState(message: "当前已是最新版本。", includeStore: false)
+                }
+            }
+        }.resume()
+    }
+
+    private func downloadUpdate(from release: GitHubRelease, fallbackURL: URL) {
+        guard
+            let asset = preferredReleaseAsset(from: release),
+            let downloadURL = URL(string: asset.browserDownloadURL)
+        else {
+            NSWorkspace.shared.open(fallbackURL)
+            sendState(message: "发现新版本 \(release.tagName)，未找到适合当前设备的 DMG，已打开下载页面。", includeStore: false)
+            return
+        }
+
+        sendState(message: "发现新版本 \(release.tagName)，正在下载 \(asset.name)...", includeStore: false)
+        URLSession.shared.downloadTask(with: downloadURL) { [weak self] temporaryURL, _, error in
+            if let error {
+                DispatchQueue.main.async {
+                    self?.sendState(error: "下载更新失败：\(error.localizedDescription)", includeStore: false)
+                }
+                return
+            }
+            guard let temporaryURL else {
+                DispatchQueue.main.async {
+                    self?.sendState(error: "下载更新失败：未收到安装包。", includeStore: false)
+                }
+                return
+            }
+
+            do {
+                let downloadsDirectory = try FileManager.default.url(
+                    for: .downloadsDirectory,
+                    in: .userDomainMask,
+                    appropriateFor: nil,
+                    create: true
+                )
+                let destinationURL = uniqueDownloadURL(
+                    in: downloadsDirectory,
+                    filename: asset.name
+                )
+                try? FileManager.default.removeItem(at: destinationURL)
+                try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
+                DispatchQueue.main.async {
+                    self?.installDownloadedUpdate(from: destinationURL)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self?.sendState(error: "保存更新失败：\(error.localizedDescription)", includeStore: false)
+                }
+            }
+        }.resume()
+    }
+
+    private func preferredReleaseAsset(from release: GitHubRelease) -> GitHubReleaseAsset? {
+        let arch = currentMachineArchitecture()
+        let dmgAssets = release.assets.filter { $0.name.lowercased().hasSuffix(".dmg") }
+        return dmgAssets.first { asset in
+            let name = asset.name.lowercased()
+            return name.contains("macos") && name.contains(arch)
+        } ?? dmgAssets.first { asset in
+            asset.name.lowercased().contains("macos")
+        } ?? dmgAssets.first
+    }
+
+    private func installDownloadedUpdate(from dmgURL: URL) {
+        do {
+            let mountedVolumeURL = try attachDiskImage(dmgURL)
+            let sourceAppURL = try findAppBundle(in: mountedVolumeURL)
+            let targetAppURL = Bundle.main.bundleURL
+            guard targetAppURL.pathExtension == "app" else {
+                NSWorkspace.shared.open(dmgURL)
+                sendState(message: "更新已下载，当前不是 App Bundle 运行，已打开安装包。", includeStore: false)
+                return
+            }
+            let scriptURL = try createUpdateInstallerScript(
+                sourceAppURL: sourceAppURL,
+                targetAppURL: targetAppURL,
+                mountedVolumeURL: mountedVolumeURL
+            )
+            try launchUpdateInstaller(scriptURL)
+            sendState(message: "更新已下载，MockKit 将退出并自动安装重启。", includeStore: false)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                NSApp.terminate(nil)
+            }
+        } catch {
+            NSWorkspace.shared.open(dmgURL)
+            sendState(error: "自动安装更新失败：\(error.localizedDescription)。已打开安装包。", includeStore: false)
+        }
+    }
+
+    private func attachDiskImage(_ dmgURL: URL) throws -> URL {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/hdiutil")
+        process.arguments = ["attach", dmgURL.path, "-nobrowse", "-readonly", "-plist"]
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        try process.run()
+        process.waitUntilExit()
+        let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        if process.terminationStatus != 0 {
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let message = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            throw NSError(domain: appName, code: Int(process.terminationStatus), userInfo: [
+                NSLocalizedDescriptionKey: message?.isEmpty == false ? message! : "无法挂载更新安装包。"
+            ])
+        }
+
+        guard
+            let plist = try PropertyListSerialization.propertyList(
+                from: outputData,
+                options: [],
+                format: nil
+            ) as? [String: Any],
+            let entities = plist["system-entities"] as? [[String: Any]],
+            let mountPoint = entities.compactMap({ $0["mount-point"] as? String }).first
+        else {
+            throw NSError(domain: appName, code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "无法读取更新安装包挂载位置。"
+            ])
+        }
+        return URL(fileURLWithPath: mountPoint, isDirectory: true)
+    }
+
+    private func findAppBundle(in mountedVolumeURL: URL) throws -> URL {
+        let contents = try FileManager.default.contentsOfDirectory(
+            at: mountedVolumeURL,
+            includingPropertiesForKeys: nil
+        )
+        if let match = contents.first(where: { $0.lastPathComponent == "\(appDisplayName).app" }) {
+            return match
+        }
+        if let match = contents.first(where: { $0.pathExtension == "app" }) {
+            return match
+        }
+        throw NSError(domain: appName, code: 1, userInfo: [
+            NSLocalizedDescriptionKey: "更新安装包中没有找到 App。"
+        ])
+    }
+
+    private func createUpdateInstallerScript(
+        sourceAppURL: URL,
+        targetAppURL: URL,
+        mountedVolumeURL: URL
+    ) throws -> URL {
+        let scriptURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mockkit-update-\(UUID().uuidString).sh")
+        let pid = ProcessInfo.processInfo.processIdentifier
+        let script = """
+        #!/bin/zsh
+        set -euo pipefail
+        source_app=\(shellQuote(sourceAppURL.path))
+        target_app=\(shellQuote(targetAppURL.path))
+        mount_point=\(shellQuote(mountedVolumeURL.path))
+        app_pid=\(pid)
+
+        while kill -0 "$app_pid" 2>/dev/null; do
+          sleep 0.2
+        done
+
+        tmp_target="${target_app}.update"
+        rm -rf "$tmp_target"
+        /usr/bin/ditto "$source_app" "$tmp_target"
+        /usr/bin/codesign --verify --deep --strict "$tmp_target"
+        rm -rf "$target_app"
+        mv "$tmp_target" "$target_app"
+        /usr/bin/xattr -dr com.apple.quarantine "$target_app" 2>/dev/null || true
+        /usr/bin/hdiutil detach "$mount_point" -quiet || true
+        /usr/bin/open "$target_app"
+        rm -f "$0"
+        """
+        try script.write(to: scriptURL, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        return scriptURL
+    }
+
+    private func launchUpdateInstaller(_ scriptURL: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = [scriptURL.path]
+        process.standardOutput = nil
+        process.standardError = nil
+        try process.run()
     }
 
     private func startGenerateAiMock(_ rawRequest: [String: Any]) throws {
@@ -757,9 +1053,6 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                 )
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    if let nextStore = result.store {
-                        self.store = nextStore
-                    }
                     var extra: [String: Any] = [:]
                     if let preview = result.aiPreview {
                         extra["aiPreview"] = self.dictionary(from: preview)
@@ -768,7 +1061,7 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                         "stage": "complete",
                         "message": "AI 已生成 Mock 预览。"
                     ]
-                    self.sendState(message: "AI 已生成 Mock 预览。", extra: extra)
+                    self.sendState(message: "AI 已生成 Mock 预览。", extra: extra, includeStore: false)
                 }
             } catch {
                 DispatchQueue.main.async { [weak self] in
@@ -779,7 +1072,8 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                                 "stage": "error",
                                 "message": error.localizedDescription
                             ]
-                        ]
+                        ],
+                        includeStore: false
                     )
                 }
             }
@@ -806,9 +1100,6 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                 )
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
-                    if let nextStore = result.store {
-                        self.store = nextStore
-                    }
                     var extra: [String: Any] = [:]
                     if let preview = result.aiMetadataPreview {
                         extra["aiMetadataPreview"] = self.dictionary(from: preview)
@@ -817,7 +1108,7 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                         "stage": "complete",
                         "message": "AI 已生成命名建议。"
                     ]
-                    self.sendState(extra: extra)
+                    self.sendState(extra: extra, includeStore: false)
                 }
             } catch {
                 DispatchQueue.main.async { [weak self] in
@@ -829,7 +1120,8 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                                 "message": error.localizedDescription
                             ],
                             "aiMetadataEndpointId": aiRequest.endpoint.id
-                        ]
+                        ],
+                        includeStore: false
                     )
                 }
             }
@@ -867,9 +1159,6 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                         self.aiGroupingCancellation = nil
                         self.aiGroupingRequestId = nil
                     }
-                    if let nextStore = result.store {
-                        self.store = nextStore
-                    }
                     var extra: [String: Any] = [:]
                     if let preview = result.aiGroupingPreview {
                         extra["aiGroupingPreview"] = self.dictionary(from: preview)
@@ -881,7 +1170,7 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                         "stage": "complete",
                         "message": "AI 已生成分组建议。"
                     ]
-                    self.sendState(message: "AI 已生成分组建议。", extra: extra)
+                    self.sendState(message: "AI 已生成分组建议。", extra: extra, includeStore: false)
                 }
             } catch {
                 DispatchQueue.main.async { [weak self] in
@@ -897,7 +1186,8 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                                 "message": error.localizedDescription
                             ],
                             "aiGroupingRequestId": requestId ?? ""
-                        ]
+                        ],
+                        includeStore: false
                     )
                 }
             }
@@ -918,7 +1208,7 @@ final class Bridge: NSObject, WKScriptMessageHandler {
     }
 
     private func sendAiProgress(_ progress: AiProgressPayload) {
-        sendState(extra: ["aiProgress": dictionary(from: progress)])
+        sendState(extra: ["aiProgress": dictionary(from: progress)], includeStore: false)
     }
 
     private func startImportCurl(_ curl: String, fetchResponse: Bool) {
@@ -1000,11 +1290,14 @@ final class Bridge: NSObject, WKScriptMessageHandler {
         sendState()
     }
 
-    private func sendState(message: String? = nil, error: String? = nil, extra: [String: Any] = [:]) {
+    private func sendState(
+        message: String? = nil,
+        error: String? = nil,
+        extra: [String: Any] = [:],
+        includeStore: Bool = true
+    ) {
         guard let webView else { return }
-        var payload: [String: Any] = [
-            "store": dictionary(from: store)
-        ]
+        var payload: [String: Any] = includeStore ? ["store": dictionary(from: store)] : [:]
         for (key, value) in extra {
             payload[key] = value
         }
@@ -1245,10 +1538,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     }
 
     private func resourceURL(named name: String, extension fileExtension: String) -> URL? {
-        if let url = Bundle.module.url(forResource: name, withExtension: fileExtension) {
-            return url
-        }
-
         let bundleNames = [
             "ChromeOverridesManager_ChromeOverridesManager.bundle",
             "Chrome Overrides Manager_ChromeOverridesManager.bundle"
@@ -1424,6 +1713,73 @@ private func shellQuote(_ value: String) -> String {
 
 private func appleScriptStringLiteral(_ value: String) -> String {
     "\"\(value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\""
+}
+
+private func normalizedVersion(_ value: String) -> String {
+    var normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    while normalized.lowercased().hasPrefix("v") {
+        normalized.removeFirst()
+    }
+    return normalized
+}
+
+private func compareVersions(_ left: String, _ right: String) -> ComparisonResult {
+    let leftParts = versionParts(left)
+    let rightParts = versionParts(right)
+    let count = max(leftParts.count, rightParts.count, 3)
+    for index in 0..<count {
+        let leftValue = index < leftParts.count ? leftParts[index] : 0
+        let rightValue = index < rightParts.count ? rightParts[index] : 0
+        if leftValue < rightValue {
+            return .orderedAscending
+        }
+        if leftValue > rightValue {
+            return .orderedDescending
+        }
+    }
+    return .orderedSame
+}
+
+private func versionParts(_ value: String) -> [Int] {
+    normalizedVersion(value)
+        .split { character in
+            character == "." || character == "-" || character == "+"
+        }
+        .map { part in
+            let digits = part.prefix { character in character.isNumber }
+            return Int(digits) ?? 0
+        }
+}
+
+private func currentMachineArchitecture() -> String {
+    var systemInfo = utsname()
+    uname(&systemInfo)
+    return withUnsafePointer(to: &systemInfo.machine) { pointer in
+        pointer.withMemoryRebound(to: CChar.self, capacity: 1) { machinePointer in
+            String(cString: machinePointer)
+        }
+    }.lowercased()
+}
+
+private func uniqueDownloadURL(in directory: URL, filename: String) -> URL {
+    let safeFilename = filename.isEmpty ? "MockKit.dmg" : filename
+    let baseURL = directory.appendingPathComponent(safeFilename, isDirectory: false)
+    if !FileManager.default.fileExists(atPath: baseURL.path) {
+        return baseURL
+    }
+
+    let pathExtension = baseURL.pathExtension
+    let baseName = baseURL.deletingPathExtension().lastPathComponent
+    for index in 2...99 {
+        let candidateName = pathExtension.isEmpty
+            ? "\(baseName) \(index)"
+            : "\(baseName) \(index).\(pathExtension)"
+        let candidateURL = directory.appendingPathComponent(candidateName, isDirectory: false)
+        if !FileManager.default.fileExists(atPath: candidateURL.path) {
+            return candidateURL
+        }
+    }
+    return baseURL
 }
 
 let app = NSApplication.shared

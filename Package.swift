@@ -1,5 +1,10 @@
 // swift-tools-version: 6.0
+import Foundation
 import PackageDescription
+
+let chromeOverridesResources: [Resource] = FileManager.default.fileExists(
+    atPath: "Sources/ChromeOverridesManager/Resources"
+) ? [.process("Resources")] : []
 
 let package = Package(
     name: "ChromeOverridesManager",
@@ -12,9 +17,7 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "ChromeOverridesManager",
-            resources: [
-                .process("Resources")
-            ]
+            resources: chromeOverridesResources
         )
     ]
 )

@@ -104,7 +104,9 @@ const defaultAiSettings: AiSettings = {
   cliPresets: [],
 };
 type SettingsSection = "appearance" | "ai" | "cli" | "about";
-const appVersion = "0.1.0";
+declare const __APP_VERSION__: string;
+
+const appVersion = __APP_VERSION__;
 const githubUrl = "https://github.com/zxpzdtom/MockKit";
 const issuesUrl = `${githubUrl}/issues`;
 const defaultCliPresets: AiCliPreset[] = [
@@ -840,7 +842,7 @@ export function App() {
   const [aiMetadataGeneratingEndpointIds, setAiMetadataGeneratingEndpointIds] = useState(
     () => new Set<string>(),
   );
-  const [aiMetadataPreview, setAiMetadataPreview] = useState<AiMetadataPreview | null>(null);
+  const [aiMetadataPreviewQueue, setAiMetadataPreviewQueue] = useState<AiMetadataPreview[]>([]);
   const [aiPreview, setAiPreview] = useState<AiPreview | null>(null);
   const [aiPreviewTab, setAiPreviewTab] = useState("case-0");
   const [aiPreviewEditingIndex, setAiPreviewEditingIndex] = useState<number | null>(null);
@@ -934,7 +936,10 @@ export function App() {
         setAiPreview(payload.aiPreview);
         setAiPreviewTab("case-0");
       }
-      if (payload.aiMetadataPreview) setAiMetadataPreview(payload.aiMetadataPreview);
+      if (payload.aiMetadataPreview) {
+        const preview = payload.aiMetadataPreview;
+        setAiMetadataPreviewQueue((current) => [...current, preview]);
+      }
       if (payload.aiGroupingPreview && !ignoreAiGroupingPayload) {
         setAiGroupingScopeOpen(false);
         setAiGroupingPreview(payload.aiGroupingPreview);
@@ -1717,10 +1722,12 @@ export function App() {
   );
 
   useEffect(() => {
-    if (!aiMetadataPreview) return;
-    applyAiMetadataPreview(aiMetadataPreview);
-    setAiMetadataPreview(null);
-  }, [aiMetadataPreview, applyAiMetadataPreview]);
+    if (aiMetadataPreviewQueue.length === 0) return;
+    for (const preview of aiMetadataPreviewQueue) {
+      applyAiMetadataPreview(preview);
+    }
+    setAiMetadataPreviewQueue([]);
+  }, [aiMetadataPreviewQueue, applyAiMetadataPreview]);
 
   const updateCase = (field: keyof MockCase, value: string) => {
     mutateStore((draft) => {
@@ -2016,6 +2023,10 @@ export function App() {
 
   const installCli = () => {
     send("installCli");
+  };
+
+  const checkForUpdates = () => {
+    send("checkForUpdates");
   };
 
   const copyCliText = (text: string) => {
@@ -2859,6 +2870,7 @@ export function App() {
           onApiKeyVisibleChange={setAiApiKeyVisible}
           onCopyText={copyCliText}
           onInstallCli={installCli}
+          onCheckForUpdates={checkForUpdates}
           onOpenChange={setSettingsOpen}
           onSectionChange={setSettingsSection}
           onLanguageChange={(language: AppLanguage) => updateUiSettings({ language })}
