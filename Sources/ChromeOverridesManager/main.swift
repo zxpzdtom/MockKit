@@ -5,7 +5,7 @@ private let appName = "MockKit"
 private let legacyAppNames = ["Overrides Studio", "Chrome Overrides Manager"]
 private let appDisplayName = "MockKit"
 private let defaultOverridesFolder = "/Users/tom/Desktop/mock"
-private let latestReleaseApiURL = URL(string: "https://api.github.com/repos/zxpzdtom/MockKit/releases/latest")!
+private let latestReleaseURL = URL(string: "https://github.com/zxpzdtom/MockKit/releases/latest")!
 private let updateCheckInterval: TimeInterval = 24 * 60 * 60
 private let lastBackgroundUpdateCheckKey = "MockKit.lastBackgroundUpdateCheck"
 
@@ -680,6 +680,10 @@ final class Bridge: NSObject, WKScriptMessageHandler {
         self.webView = webView
     }
 
+    func checkForUpdatesFromMenu() {
+        checkForUpdates(interactive: true)
+    }
+
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let payload = message.body as? [String: Any],
               let command = payload["command"] as? String else {
@@ -767,6 +771,9 @@ final class Bridge: NSObject, WKScriptMessageHandler {
 
     private func checkForUpdates(interactive: Bool) {
         if !interactive {
+            if isRunningDevelopmentFrontend() {
+                return
+            }
             let lastCheck = UserDefaults.standard.object(forKey: lastBackgroundUpdateCheckKey) as? Date
             if let lastCheck, Date().timeIntervalSince(lastCheck) < updateCheckInterval {
                 return
@@ -776,11 +783,11 @@ final class Bridge: NSObject, WKScriptMessageHandler {
         }
 
         let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
-        var request = URLRequest(url: latestReleaseApiURL)
-        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        var request = URLRequest(url: latestReleaseURL)
+        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
         request.setValue("MockKit", forHTTPHeaderField: "User-Agent")
 
-        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+        URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
             if let error {
                 DispatchQueue.main.async {
                     if !interactive {
@@ -792,8 +799,7 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                 return
             }
             guard
-                let httpResponse = response as? HTTPURLResponse,
-                let data
+                let httpResponse = response as? HTTPURLResponse
             else {
                 DispatchQueue.main.async {
                     if !interactive {
@@ -819,30 +825,31 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                 return
             }
             guard
-                let release = try? JSONDecoder().decode(GitHubRelease.self, from: data),
-                let releaseURL = URL(string: release.htmlURL)
+                let responseURL = httpResponse.url ?? response?.url,
+                let tagName = releaseTag(from: responseURL)
             else {
                 DispatchQueue.main.async {
                     if !interactive {
                         UserDefaults.standard.set(Date(), forKey: lastBackgroundUpdateCheckKey)
                         return
                     }
-                    self?.sendState(error: "检查更新失败：无法读取 GitHub Release。", includeStore: false)
+                    self?.sendState(error: "检查更新失败：无法识别 GitHub 最新版本。", includeStore: false)
                 }
                 return
             }
 
-            let latestVersion = normalizedVersion(release.tagName)
+            let latestVersion = normalizedVersion(tagName)
+            let release = githubReleaseFromRedirect(tagName: tagName, releaseURL: responseURL)
             DispatchQueue.main.async {
                 if !interactive {
                     UserDefaults.standard.set(Date(), forKey: lastBackgroundUpdateCheckKey)
                 }
                 if compareVersions(latestVersion, currentVersion) == .orderedDescending {
                     guard interactive else {
-                        self?.sendState(message: "发现新版本 \(release.tagName)，可在关于页检查更新下载。", includeStore: false)
+                        self?.sendState(message: "发现新版本 \(tagName)，可在关于页检查更新下载。", includeStore: false)
                         return
                     }
-                    self?.downloadUpdate(from: release, fallbackURL: releaseURL)
+                    self?.downloadUpdate(from: release, fallbackURL: responseURL)
                 } else if interactive {
                     self?.sendState(message: "当前已是最新版本。", includeStore: false)
                 }
@@ -861,10 +868,17 @@ final class Bridge: NSObject, WKScriptMessageHandler {
         }
 
         sendState(message: "发现新版本 \(release.tagName)，正在下载 \(asset.name)...", includeStore: false)
-        URLSession.shared.downloadTask(with: downloadURL) { [weak self] temporaryURL, _, error in
+        URLSession.shared.downloadTask(with: downloadURL) { [weak self] temporaryURL, response, error in
             if let error {
                 DispatchQueue.main.async {
                     self?.sendState(error: "下载更新失败：\(error.localizedDescription)", includeStore: false)
+                }
+                return
+            }
+            if let httpResponse = response as? HTTPURLResponse,
+               !(200..<300).contains(httpResponse.statusCode) {
+                DispatchQueue.main.async {
+                    self?.sendState(error: "下载更新失败：GitHub 返回 \(httpResponse.statusCode)。", includeStore: false)
                 }
                 return
             }
@@ -1419,6 +1433,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
             at: 1
         )
         installCliItem.target = self
+        let checkForUpdatesItem = appMenu.insertItem(
+            withTitle: "检查更新...",
+            action: #selector(checkForUpdates(_:)),
+            keyEquivalent: "",
+            at: 2
+        )
+        checkForUpdatesItem.target = self
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
 
@@ -1488,6 +1509,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         } catch {
             showAlert(title: "Could Not Install CLI", message: error.localizedDescription)
         }
+    }
+
+    @objc private func checkForUpdates(_ sender: Any?) {
+        bridge.checkForUpdatesFromMenu()
     }
 
     @objc private func openWebInspector(_ sender: Any?) {
@@ -1713,6 +1738,43 @@ private func shellQuote(_ value: String) -> String {
 
 private func appleScriptStringLiteral(_ value: String) -> String {
     "\"\(value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\""
+}
+
+private func isRunningDevelopmentFrontend() -> Bool {
+    let environment = ProcessInfo.processInfo.environment
+    if let rawURL = environment["MOCKKIT_FRONTEND_DEV_SERVER"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !rawURL.isEmpty {
+        return true
+    }
+    return ProcessInfo.processInfo.arguments.contains("--frontend-dev-server")
+}
+
+private func releaseTag(from url: URL) -> String? {
+    let components = url.pathComponents
+    guard
+        let tagIndex = components.firstIndex(of: "tag"),
+        components.indices.contains(components.index(after: tagIndex))
+    else {
+        return nil
+    }
+    return components[components.index(after: tagIndex)].removingPercentEncoding
+}
+
+private func githubReleaseFromRedirect(tagName: String, releaseURL: URL) -> GitHubRelease {
+    let version = normalizedVersion(tagName)
+    let arch = currentMachineArchitecture()
+    let assetName = "\(appDisplayName)-\(version)-macos-\(arch).dmg"
+    let downloadURL = "https://github.com/zxpzdtom/MockKit/releases/download/\(tagName)/\(assetName)"
+    return GitHubRelease(
+        tagName: tagName,
+        htmlURL: releaseURL.absoluteString,
+        assets: [
+            GitHubReleaseAsset(
+                name: assetName,
+                browserDownloadURL: downloadURL
+            )
+        ]
+    )
 }
 
 private func normalizedVersion(_ value: String) -> String {
