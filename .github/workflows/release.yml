@@ -13,6 +13,7 @@ jobs:
     name: Build macOS DMG
     runs-on: macos-15
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       APP_VERSION: ${{ github.ref_name }}
       APP_BUILD_NUMBER: ${{ github.run_number }}
       APPLE_DEVELOPER_ID_APPLICATION: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
