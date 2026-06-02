@@ -1,5 +1,5 @@
 import { Button } from "@/components/ui/button";
-import { Braces, Settings2 } from "lucide-react";
+import { Braces, RotateCw, Settings2 } from "lucide-react";
 import type { AppMessages } from "../i18n";
 import { send } from "../lib/native";
 
@@ -7,7 +7,9 @@ interface MainToolbarProps {
   endpointCount: number;
   messages: AppMessages["toolbar"];
   commonMessages: AppMessages["common"];
+  updateReady: boolean;
   onImportCurl(): void;
+  onInstallUpdate(): void;
   onOpenAiSettings(): void;
 }
 
@@ -15,7 +17,9 @@ export function MainToolbar({
   endpointCount,
   messages,
   commonMessages,
+  updateReady,
   onImportCurl,
+  onInstallUpdate,
   onOpenAiSettings,
 }: MainToolbarProps) {
   return (
@@ -28,6 +32,12 @@ export function MainToolbar({
         {commonMessages.endpointCount(endpointCount)}
       </div>
       <div className="flex-1" />
+      {updateReady ? (
+        <Button className="min-h-8 px-3" variant="secondary" type="button" onClick={onInstallUpdate}>
+          <RotateCw size={14} />
+          {messages.restartUpdate}
+        </Button>
+      ) : null}
       <Button
         aria-label={messages.aiSettings}
         className="min-h-8 px-3"

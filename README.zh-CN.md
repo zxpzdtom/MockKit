@@ -28,6 +28,7 @@ MockKit 不代理流量，也不会 hook `fetch` 或 `XMLHttpRequest`。它直�
 - **中文 / 英文界面**：语言偏好保存在本机配置里。
 - **主题预设**：基于 shadcn 风格 token 映射到 MockKit 界面变量。
 - **CLI 支持**：在终端脚本里扫描、导入、编辑、切换场景、发布和禁用 Mock。
+- **应用更新**：通过 GitHub Releases 检查更新，支持更新弹框、下载进度、跳过版本和重启安装。
 - **本地优先**：应用数据和 API Key 默认只保存在本机。
 
 ## 工作方式
@@ -40,13 +41,13 @@ MockKit 会在 Overrides 文件夹里写入一个隐藏 manifest：
 
 这个 manifest 用来记录 MockKit 管理过的文件，避免禁用或发布时误删同目录下的非托管文件。
 
-开发示例默认使用：
+MockKit 默认使用 App 自己的数据目录作为 Overrides 文件夹：
 
 ```text
-/Users/tom/Desktop/mock
+~/Library/Application Support/MockKit/Overrides
 ```
 
-你可以在 App 里选择其他 Overrides 文件夹。
+如果 Chrome DevTools 已经配置了 Local Overrides 文件夹，MockKit 会跟随 Chrome 的设置，确保 Chrome 和 MockKit 读写同一个目录。
 
 ## Chrome 设置
 
@@ -138,6 +139,35 @@ Release 构建：
 pnpm mac:build:release
 ```
 
+如果要在本地测试“旧版本更新到最新版本”，可以临时指定旧版本号，不要改仓库里的版本文件：
+
+```bash
+APP_VERSION=0.0.0 pnpm mac:build
+open dist/MockKit.app
+```
+
+## CI 和发布
+
+仓库里有两个 GitHub Actions workflow：
+
+- `CI`：在 `main` push 和 pull request 时自动执行，检查前端和 Rust core，构建 Swift App，打包 DMG，并把 DMG 作为 workflow artifact 上传。
+- `Release`：在推送 `v*` tag 时执行，构建正式 DMG；如果配置了 Apple Developer secrets，会自动签名、公证、staple；同时根据上一个 tag 到当前 tag 的提交自动生成更新日志，并发布或更新 GitHub Release。
+
+日常提交代码到 `main` 会自动触发构建验证：
+
+```bash
+git push origin main
+```
+
+要发布 App 能检查到的正式更新，需要推送版本 tag：
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+MockKit 的检查更新读取 GitHub Releases，所以 `main` 构建用于验证，带版本的 tag 才是用户真正会收到的更新。
+
 ## 项目结构
 
 ```text
@@ -146,6 +176,7 @@ frontend/                         React UI、shadcn 风格组件、主题和 i18
 src/                              Rust 核心逻辑和 CLI
 scripts/                          开发和 App 打包脚本
 assets/                           App 图标和图标源文件
+.github/workflows/                CI 构建和 tag 发布自动化
 ```
 
 ## 当前限制

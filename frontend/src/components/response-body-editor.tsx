@@ -231,7 +231,6 @@ class MockKitSearchPanel implements Panel {
       item.wrapper.dataset.checked = String(checked);
     }
   }
-
 }
 
 function createSearchPanel(view: EditorView) {

@@ -15,6 +15,7 @@ const zh = {
   toolbar: {
     aiSettings: "AI 设置",
     importCurl: "导入 cURL",
+    restartUpdate: "重启更新",
   },
   sidebar: {
     localOverrides: "LOCAL OVERRIDES",
@@ -151,6 +152,7 @@ const zh = {
     typeScriptFailed: "生成 TypeScript 定义失败。",
     pasteCurlFirst: "先粘贴一段 cURL。",
     noGroupableEndpoints: "还没有可分组的接口。",
+    checkingUpdates: "正在检查更新...",
     aiUnderstandingEndpoint: "AI 正在理解接口用途...",
     aiRenameInstruction: "根据接口真实用途重新命名标题，并同步生成或优化说明。",
     selectAtLeastOneEndpoint: "请至少选择 1 个接口。",
@@ -251,6 +253,7 @@ const en: typeof zh = {
   toolbar: {
     aiSettings: "AI Settings",
     importCurl: "Import cURL",
+    restartUpdate: "Restart to Update",
   },
   sidebar: {
     localOverrides: "LOCAL OVERRIDES",
@@ -389,6 +392,7 @@ const en: typeof zh = {
     typeScriptFailed: "Failed to generate TypeScript definitions.",
     pasteCurlFirst: "Paste a cURL command first.",
     noGroupableEndpoints: "No endpoints available for grouping.",
+    checkingUpdates: "Checking for updates...",
     aiUnderstandingEndpoint: "AI is understanding the endpoint purpose...",
     aiRenameInstruction:
       "Rename the endpoint from its actual purpose and generate or improve its description.",

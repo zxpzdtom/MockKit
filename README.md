@@ -28,6 +28,7 @@ The app does not hook `fetch` or `XMLHttpRequest`. It manages files in the Chrom
 - **Chinese / English UI** with local preference storage.
 - **Theme presets** built from shadcn-style tokens.
 - **CLI support** for scanning, importing, editing, switching cases, publishing, and disabling mocks from terminal scripts.
+- **App updates** through GitHub Releases, with an in-app update dialog, download progress, skip-version support, and restart-to-install.
 - **Local-first storage**. App data and API keys are stored locally by default.
 
 ## How It Works
@@ -40,13 +41,13 @@ MockKit writes a hidden manifest into the Overrides folder:
 
 The manifest records files managed by MockKit so disabling or publishing mocks does not delete unrelated files in the same Overrides folder.
 
-By default, development examples target:
+By default, MockKit uses an app-owned Overrides folder:
 
 ```text
-/Users/tom/Desktop/mock
+~/Library/Application Support/MockKit/Overrides
 ```
 
-You can choose another Overrides folder from the app.
+If Chrome DevTools already has a Local Overrides folder configured, MockKit follows that Chrome setting so Chrome and MockKit keep reading and writing the same folder.
 
 ## Chrome Setup
 
@@ -138,6 +139,35 @@ For release builds:
 pnpm mac:build:release
 ```
 
+For local update testing, build a deliberately older app version without changing repository files:
+
+```bash
+APP_VERSION=0.0.0 pnpm mac:build
+open dist/MockKit.app
+```
+
+## CI and Releases
+
+The repository has two GitHub Actions workflows:
+
+- `CI`: runs on `main` pushes and pull requests, checks the frontend and Rust core, builds the Swift app, packages a DMG, and uploads it as a workflow artifact.
+- `Release`: runs when a `v*` tag is pushed, builds the release DMG, optionally signs and notarizes it when Apple Developer secrets are configured, generates release notes from commits since the previous tag, and publishes or updates the GitHub Release.
+
+Push normal code to `main` for automatic build verification:
+
+```bash
+git push origin main
+```
+
+Publish a version that the app can discover through the update checker:
+
+```bash
+git tag v0.1.1
+git push origin v0.1.1
+```
+
+The app reads GitHub Releases for update checks, so `main` builds are useful for verification, while tagged releases are what users receive as updates.
+
 ## Project Structure
 
 ```text
@@ -146,6 +176,7 @@ frontend/                         React UI, shadcn-style components, themes, i18
 src/                              Rust core and CLI
 scripts/                          Dev and app bundle scripts
 assets/                           App icons and icon source images
+.github/workflows/                CI build and tagged release automation
 ```
 
 ## Limits

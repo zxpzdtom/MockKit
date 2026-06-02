@@ -33,8 +33,8 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipProvider } from "@/components/ui/tooltip";
+import { UpdateDialog } from "@/components/update-dialog";
 import { cn } from "@/lib/utils";
-import type { FileContents } from "@pierre/diffs/react";
 import {
   Braces,
   Check,
@@ -80,11 +80,19 @@ import type {
   NativePayload,
   Store,
   UiSettings,
+  UpdateInfo,
 } from "./types";
 
 const successBody = '{\n  "code": 200,\n  "message": "success",\n  "data": {}\n}';
 const failureBody = '{\n  "code": 500,\n  "message": "server error",\n  "data": null\n}';
 const emptyBody = '{\n  "code": 200,\n  "message": "success",\n  "data": []\n}';
+
+interface CodePreviewFile {
+  name: string;
+  contents: string;
+  lang: string;
+  cacheKey: string;
+}
 const legacyZhAiGroupingPrompt =
   "你是一个资深前端 Mock 接口目录整理助手。请按业务域为接口建议分组。分组名使用简洁中文，优先一到两级路径；优先复用语义相近的已有分组；不要把域名、版本号、api、json、mock、response 作为分组名；不要为每个接口创造过细目录。";
 const legacyDefaultAiGroupingPrompts = [
@@ -403,7 +411,7 @@ function normalizeGroupPaths(paths: string[]) {
   );
 }
 
-function caseFile(endpoint: Endpoint | null, mockCase: MockCase | null): FileContents {
+function caseFile(endpoint: Endpoint | null, mockCase: MockCase | null): CodePreviewFile {
   return {
     name: endpoint?.overridePath || "response.json",
     contents: mockCase?.body || "",
@@ -835,6 +843,8 @@ export function App() {
   const [importingCurl, setImportingCurl] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("appearance");
+  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null);
   const [aiApiKeyVisible, setAiApiKeyVisible] = useState(false);
   const [aiDialogMode, setAiDialogMode] = useState<"single" | "multiple" | null>(null);
   const [aiInstruction, setAiInstruction] = useState("");
@@ -906,6 +916,10 @@ export function App() {
         if (payload.importedCaseId) setSelectedCaseId(payload.importedCaseId);
       }
       if (payload.importedEndpointId || payload.error) setImportingCurl(false);
+      if (payload.updateInfo) {
+        setUpdateInfo(payload.updateInfo);
+        setUpdateDialogOpen(true);
+      }
       if (payload.aiProgress) setAiProgress(payload.aiProgress);
       if (payload.aiPreview || payload.error) setAiGenerating(false);
       if (payload.aiMetadataPreview) {
@@ -1022,6 +1036,7 @@ export function App() {
   const currentTheme = uiSettings.theme;
   const currentLanguage = uiSettings.language;
   const copy = messages[currentLanguage];
+  const updateReady = updateInfo?.stage === "downloaded";
   const bodyDocumentKey = endpoint && mockCase ? `${endpoint.id}-${mockCase.id}` : "empty";
   const currentBodyDraft = bodyDraftKey === bodyDocumentKey ? bodyDraft : (mockCase?.body ?? "");
   const directoryTree = useMemo(
@@ -2026,7 +2041,26 @@ export function App() {
   };
 
   const checkForUpdates = () => {
+    setUpdateInfo({ stage: "checking", message: copy.main.checkingUpdates });
+    setUpdateDialogOpen(true);
     send("checkForUpdates");
+  };
+
+  const downloadUpdate = () => {
+    send("downloadUpdate");
+  };
+
+  const cancelUpdateDownload = () => {
+    send("cancelUpdateDownload");
+  };
+
+  const installDownloadedUpdate = () => {
+    send("installDownloadedUpdate");
+  };
+
+  const skipUpdateVersion = () => {
+    setUpdateDialogOpen(false);
+    send("skipUpdateVersion");
   };
 
   const copyCliText = (text: string) => {
@@ -2383,7 +2417,9 @@ export function App() {
                 endpointCount={store.endpoints.length}
                 messages={copy.toolbar}
                 commonMessages={copy.common}
+                updateReady={updateReady}
                 onImportCurl={() => setImportOpen(true)}
+                onInstallUpdate={installDownloadedUpdate}
                 onOpenAiSettings={() => openSettings("ai")}
               />
 
@@ -2876,6 +2912,18 @@ export function App() {
           onLanguageChange={(language: AppLanguage) => updateUiSettings({ language })}
           onThemeChange={(theme: AppTheme) => updateUiSettings({ theme })}
           onUpdateSettings={updateAiSettings}
+        />
+
+        <UpdateDialog
+          language={currentLanguage}
+          open={updateDialogOpen}
+          updateInfo={updateInfo}
+          onCancelDownload={cancelUpdateDownload}
+          onCheck={checkForUpdates}
+          onDownload={downloadUpdate}
+          onInstall={installDownloadedUpdate}
+          onOpenChange={setUpdateDialogOpen}
+          onSkipVersion={skipUpdateVersion}
         />
 
         <Dialog

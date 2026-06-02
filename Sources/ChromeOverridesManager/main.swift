@@ -4,10 +4,40 @@ import WebKit
 private let appName = "MockKit"
 private let legacyAppNames = ["Overrides Studio", "Chrome Overrides Manager"]
 private let appDisplayName = "MockKit"
-private let defaultOverridesFolder = "/Users/tom/Desktop/mock"
-private let latestReleaseURL = URL(string: "https://github.com/zxpzdtom/MockKit/releases/latest")!
-private let updateCheckInterval: TimeInterval = 24 * 60 * 60
+private let latestReleaseFeedURL = URL(string: "https://github.com/zxpzdtom/MockKit/releases.atom")!
 private let lastBackgroundUpdateCheckKey = "MockKit.lastBackgroundUpdateCheck"
+private let skippedUpdateTagKey = "MockKit.skippedUpdateTagName"
+private let menuLanguageDidChangeNotification = Notification.Name("MockKit.menuLanguageDidChange")
+
+private enum MockKitPaths {
+    static var applicationSupportDirectory: URL {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+                "Library/Application Support",
+                isDirectory: true
+            )
+    }
+
+    static var defaultOverridesFolder: String {
+        applicationSupportDirectory
+            .appendingPathComponent(appName, isDirectory: true)
+            .appendingPathComponent("Overrides", isDirectory: true)
+            .path
+    }
+
+    static var legacyDefaultOverridesFolder: String {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Desktop", isDirectory: true)
+            .appendingPathComponent("mock", isDirectory: true)
+            .path
+    }
+
+    static var updateDownloadDirectory: URL {
+        applicationSupportDirectory
+            .appendingPathComponent(appName, isDirectory: true)
+            .appendingPathComponent("Updates", isDirectory: true)
+    }
+}
 
 struct Store: Codable {
     var overridesFolder: String
@@ -233,6 +263,53 @@ struct GitHubReleaseAsset: Decodable {
     }
 }
 
+final class ReleaseFeedParser: NSObject, XMLParserDelegate {
+    private var currentElement = ""
+    private var currentTitle = ""
+    private var currentReleaseURL = ""
+    private var isInsideEntry = false
+    private var didCaptureLatestEntry = false
+
+    func parse(data: Data) -> (tagName: String, releaseURL: URL)? {
+        let parser = XMLParser(data: data)
+        parser.delegate = self
+        guard parser.parse(), !currentTitle.isEmpty, let releaseURL = URL(string: currentReleaseURL) else {
+            return nil
+        }
+        return (currentTitle, releaseURL)
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+        currentElement = elementName
+        guard !didCaptureLatestEntry else { return }
+        if elementName == "entry" {
+            isInsideEntry = true
+            currentTitle = ""
+            currentReleaseURL = ""
+        } else if isInsideEntry,
+                  elementName == "link",
+                  attributeDict["rel"] == "alternate",
+                  attributeDict["type"] == "text/html",
+                  let href = attributeDict["href"] {
+            currentReleaseURL = href
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        guard isInsideEntry, !didCaptureLatestEntry, currentElement == "title" else { return }
+        currentTitle += string
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        if elementName == "entry", isInsideEntry {
+            isInsideEntry = false
+            didCaptureLatestEntry = !currentTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            currentTitle = currentTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        currentElement = ""
+    }
+}
+
 final class AiProgressLineParser: @unchecked Sendable {
     private var buffer = Data()
     private let lock = NSLock()
@@ -310,7 +387,7 @@ final class RustCoreClient {
         try run(CoreRequest(
             command: "load",
             storePath: storePath.path,
-            defaultOverridesFolder: defaultOverridesFolder,
+            defaultOverridesFolder: MockKitPaths.defaultOverridesFolder,
             legacyStorePaths: legacyStorePaths.map(\.path),
             store: nil
         ))
@@ -523,7 +600,9 @@ final class StoreController {
 
     func load() -> Store {
         do {
-            return try core.load(storePath: storeURL, legacyStorePaths: legacyStoreURLs).store ?? defaultStore()
+            var store = try core.load(storePath: storeURL, legacyStorePaths: legacyStoreURLs).store ?? defaultStore()
+            migrateLegacyDefaultOverridesFolderIfNeeded(store: &store)
+            return store
         } catch {
             NSLog("Rust core load failed: \(error.localizedDescription)")
             let store = defaultStore()
@@ -642,7 +721,7 @@ final class StoreController {
 
     private func defaultStore() -> Store {
         Store(
-            overridesFolder: defaultOverridesFolder,
+            overridesFolder: MockKitPaths.defaultOverridesFolder,
             mockEnabled: true,
             chromeProfile: nil,
             aiSettings: defaultAiSettings(),
@@ -650,6 +729,23 @@ final class StoreController {
             groupPaths: [],
             endpoints: []
         )
+    }
+
+    private func migrateLegacyDefaultOverridesFolderIfNeeded(store: inout Store) {
+        let currentPath = URL(fileURLWithPath: store.overridesFolder, isDirectory: true).standardizedFileURL.path
+        let legacyPath = URL(fileURLWithPath: MockKitPaths.legacyDefaultOverridesFolder, isDirectory: true).standardizedFileURL.path
+        let chromePath = store.chromeProfile?.overridesFolder.map {
+            URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL.path
+        }
+        guard currentPath == legacyPath else { return }
+        guard chromePath != legacyPath else { return }
+
+        store.overridesFolder = MockKitPaths.defaultOverridesFolder
+        try? fileManager.createDirectory(
+            at: URL(fileURLWithPath: store.overridesFolder, isDirectory: true),
+            withIntermediateDirectories: true
+        )
+        save(store)
     }
 
     private func sanitizedRelativePath(_ path: String) -> String {
@@ -660,7 +756,7 @@ final class StoreController {
     }
 }
 
-final class Bridge: NSObject, WKScriptMessageHandler {
+final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSessionDownloadDelegate {
     private let storeController = StoreController()
     private let importQueue = DispatchQueue(label: "mockkit.import-curl", qos: .userInitiated)
     private let aiQueue = DispatchQueue(label: "mockkit.ai.generate", qos: .userInitiated)
@@ -670,6 +766,17 @@ final class Bridge: NSObject, WKScriptMessageHandler {
     private var pendingStorePayload: Any?
     private var aiGroupingCancellation: CancellationToken?
     private var aiGroupingRequestId: String?
+    private var pendingUpdateRelease: GitHubRelease?
+    private var downloadedUpdateURL: URL?
+    private var updateDownloadTask: URLSessionDownloadTask?
+    private var updateDownloadAssetName: String?
+    private var updateDownloadCompleted = false
+    private var updateDownloadWasCancelled = false
+    private lazy var updateSession = URLSession(
+        configuration: .default,
+        delegate: self,
+        delegateQueue: OperationQueue.main
+    )
 
     override init() {
         store = storeController.load()
@@ -682,6 +789,10 @@ final class Bridge: NSObject, WKScriptMessageHandler {
 
     func checkForUpdatesFromMenu() {
         checkForUpdates(interactive: true)
+    }
+
+    func currentLanguage() -> String {
+        store.uiSettings?.language ?? "zh-CN"
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -757,6 +868,14 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                 sendResult(message: "CLI 已安装到 \(result.path)。\(suffix)")
             case "checkForUpdates":
                 checkForUpdates(interactive: true)
+            case "downloadUpdate":
+                startUpdateDownload()
+            case "cancelUpdateDownload":
+                cancelUpdateDownload()
+            case "installDownloadedUpdate":
+                installDownloadedUpdate()
+            case "skipUpdateVersion":
+                skipPendingUpdateVersion()
             case "startWindowDrag":
                 startWindowDrag()
             case "toggleZoom":
@@ -775,38 +894,44 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                 return
             }
             let lastCheck = UserDefaults.standard.object(forKey: lastBackgroundUpdateCheckKey) as? Date
-            if let lastCheck, Date().timeIntervalSince(lastCheck) < updateCheckInterval {
+            if let lastCheck, Calendar.current.isDateInToday(lastCheck) {
                 return
             }
         } else {
-            sendState(message: "正在检查更新...", includeStore: false)
+            sendUpdateState(stage: "checking", message: "正在检查更新...")
+        }
+
+        if interactive, let downloadedUpdateURL {
+            sendDownloadedUpdateReady(downloadedUpdateURL: downloadedUpdateURL)
+            return
         }
 
         let currentVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
-        var request = URLRequest(url: latestReleaseURL)
-        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+        var request = URLRequest(url: latestReleaseFeedURL)
+        request.setValue("application/atom+xml,application/xml,text/xml", forHTTPHeaderField: "Accept")
         request.setValue("MockKit", forHTTPHeaderField: "User-Agent")
 
-        URLSession.shared.dataTask(with: request) { [weak self] _, response, error in
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             if let error {
                 DispatchQueue.main.async {
                     if !interactive {
                         UserDefaults.standard.set(Date(), forKey: lastBackgroundUpdateCheckKey)
                         return
                     }
-                    self?.sendState(error: "检查更新失败：\(error.localizedDescription)", includeStore: false)
+                    self?.sendUpdateState(stage: "error", message: "检查更新失败：\(error.localizedDescription)")
                 }
                 return
             }
             guard
-                let httpResponse = response as? HTTPURLResponse
+                let httpResponse = response as? HTTPURLResponse,
+                let data
             else {
                 DispatchQueue.main.async {
                     if !interactive {
                         UserDefaults.standard.set(Date(), forKey: lastBackgroundUpdateCheckKey)
                         return
                     }
-                    self?.sendState(error: "检查更新失败：无法读取 GitHub Release。", includeStore: false)
+                    self?.sendUpdateState(stage: "error", message: "检查更新失败：无法读取 GitHub Release。")
                 }
                 return
             }
@@ -817,100 +942,118 @@ final class Bridge: NSObject, WKScriptMessageHandler {
                         return
                     }
                     if httpResponse.statusCode == 404 {
-                        self?.sendState(message: "还没有发布 GitHub Release，暂时无法检查更新。", includeStore: false)
+                        self?.sendUpdateState(stage: "notAvailable", message: "还没有发布 GitHub Release，暂时无法检查更新。")
                     } else {
-                        self?.sendState(error: "检查更新失败：GitHub 返回 \(httpResponse.statusCode)。", includeStore: false)
+                        self?.sendUpdateState(stage: "error", message: "检查更新失败：GitHub 返回 \(httpResponse.statusCode)。")
                     }
                 }
                 return
             }
             guard
-                let responseURL = httpResponse.url ?? response?.url,
-                let tagName = releaseTag(from: responseURL)
+                let latest = ReleaseFeedParser().parse(data: data)
             else {
                 DispatchQueue.main.async {
                     if !interactive {
                         UserDefaults.standard.set(Date(), forKey: lastBackgroundUpdateCheckKey)
                         return
                     }
-                    self?.sendState(error: "检查更新失败：无法识别 GitHub 最新版本。", includeStore: false)
+                    self?.sendUpdateState(stage: "notAvailable", message: "还没有发布 GitHub Release，暂时无法检查更新。")
                 }
                 return
             }
 
-            let latestVersion = normalizedVersion(tagName)
-            let release = githubReleaseFromRedirect(tagName: tagName, releaseURL: responseURL)
+            let latestVersion = normalizedVersion(latest.tagName)
+            let release = githubReleaseFromRedirect(tagName: latest.tagName, releaseURL: latest.releaseURL)
             DispatchQueue.main.async {
                 if !interactive {
                     UserDefaults.standard.set(Date(), forKey: lastBackgroundUpdateCheckKey)
                 }
                 if compareVersions(latestVersion, currentVersion) == .orderedDescending {
-                    guard interactive else {
-                        self?.sendState(message: "发现新版本 \(tagName)，可在关于页检查更新下载。", includeStore: false)
+                    if !interactive,
+                       UserDefaults.standard.string(forKey: skippedUpdateTagKey) == latest.tagName {
                         return
                     }
-                    self?.downloadUpdate(from: release, fallbackURL: responseURL)
+                    self?.pendingUpdateRelease = release
+                    self?.downloadedUpdateURL = nil
+                    self?.sendUpdateAvailable(release: release, currentVersion: currentVersion, latestVersion: latestVersion)
                 } else if interactive {
-                    self?.sendState(message: "当前已是最新版本。", includeStore: false)
+                    self?.sendUpdateState(
+                        stage: "notAvailable",
+                        message: "当前已是最新版本。",
+                        currentVersion: currentVersion,
+                        latestVersion: latestVersion,
+                        tagName: latest.tagName
+                    )
                 }
             }
         }.resume()
     }
 
-    private func downloadUpdate(from release: GitHubRelease, fallbackURL: URL) {
+    private func startUpdateDownload() {
+        guard let release = pendingUpdateRelease else {
+            sendUpdateState(stage: "error", message: "没有可下载的更新。")
+            return
+        }
         guard
             let asset = preferredReleaseAsset(from: release),
             let downloadURL = URL(string: asset.browserDownloadURL)
         else {
-            NSWorkspace.shared.open(fallbackURL)
-            sendState(message: "发现新版本 \(release.tagName)，未找到适合当前设备的 DMG，已打开下载页面。", includeStore: false)
+            if let fallbackURL = URL(string: release.htmlURL) {
+                NSWorkspace.shared.open(fallbackURL)
+            }
+            sendUpdateState(stage: "error", message: "发现新版本 \(release.tagName)，未找到适合当前设备的 DMG，已打开下载页面。")
             return
         }
 
-        sendState(message: "发现新版本 \(release.tagName)，正在下载 \(asset.name)...", includeStore: false)
-        URLSession.shared.downloadTask(with: downloadURL) { [weak self] temporaryURL, response, error in
-            if let error {
-                DispatchQueue.main.async {
-                    self?.sendState(error: "下载更新失败：\(error.localizedDescription)", includeStore: false)
-                }
-                return
-            }
-            if let httpResponse = response as? HTTPURLResponse,
-               !(200..<300).contains(httpResponse.statusCode) {
-                DispatchQueue.main.async {
-                    self?.sendState(error: "下载更新失败：GitHub 返回 \(httpResponse.statusCode)。", includeStore: false)
-                }
-                return
-            }
-            guard let temporaryURL else {
-                DispatchQueue.main.async {
-                    self?.sendState(error: "下载更新失败：未收到安装包。", includeStore: false)
-                }
-                return
-            }
+        updateDownloadTask?.cancel()
+        downloadedUpdateURL = nil
+        updateDownloadAssetName = asset.name
+        updateDownloadCompleted = false
+        updateDownloadWasCancelled = false
 
-            do {
-                let downloadsDirectory = try FileManager.default.url(
-                    for: .downloadsDirectory,
-                    in: .userDomainMask,
-                    appropriateFor: nil,
-                    create: true
-                )
-                let destinationURL = uniqueDownloadURL(
-                    in: downloadsDirectory,
-                    filename: asset.name
-                )
-                try? FileManager.default.removeItem(at: destinationURL)
-                try FileManager.default.moveItem(at: temporaryURL, to: destinationURL)
-                DispatchQueue.main.async {
-                    self?.installDownloadedUpdate(from: destinationURL)
-                }
-            } catch {
-                DispatchQueue.main.async {
-                    self?.sendState(error: "保存更新失败：\(error.localizedDescription)", includeStore: false)
-                }
-            }
-        }.resume()
+        sendUpdateState(
+            stage: "downloading",
+            message: "正在下载 \(asset.name)...",
+            latestVersion: normalizedVersion(release.tagName),
+            tagName: release.tagName,
+            assetName: asset.name,
+            progress: 0
+        )
+        let task = updateSession.downloadTask(with: downloadURL)
+        updateDownloadTask = task
+        task.resume()
+    }
+
+    private func cancelUpdateDownload() {
+        guard let updateDownloadTask else {
+            sendUpdateState(stage: "cancelled", message: "下载已停止，可稍后重新检查。")
+            return
+        }
+        updateDownloadWasCancelled = true
+        updateDownloadTask.cancel()
+    }
+
+    private func skipPendingUpdateVersion() {
+        guard let release = pendingUpdateRelease else {
+            return
+        }
+        updateDownloadWasCancelled = true
+        updateDownloadTask?.cancel()
+        updateDownloadTask = nil
+        updateDownloadAssetName = nil
+        updateDownloadCompleted = false
+        downloadedUpdateURL = nil
+        pendingUpdateRelease = nil
+        UserDefaults.standard.set(release.tagName, forKey: skippedUpdateTagKey)
+    }
+
+    private func installDownloadedUpdate() {
+        guard let downloadedUpdateURL else {
+            sendUpdateState(stage: "error", message: "更新还没有下载完成。")
+            return
+        }
+        sendUpdateState(stage: "installing", message: "MockKit 将退出并安装更新。", progress: 100)
+        installDownloadedUpdate(from: downloadedUpdateURL)
     }
 
     private func preferredReleaseAsset(from release: GitHubRelease) -> GitHubReleaseAsset? {
@@ -922,6 +1065,12 @@ final class Bridge: NSObject, WKScriptMessageHandler {
         } ?? dmgAssets.first { asset in
             asset.name.lowercased().contains("macos")
         } ?? dmgAssets.first
+    }
+
+    private func updateDownloadDirectory() throws -> URL {
+        let directory = MockKitPaths.updateDownloadDirectory
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
     }
 
     private func installDownloadedUpdate(from dmgURL: URL) {
@@ -947,6 +1096,103 @@ final class Bridge: NSObject, WKScriptMessageHandler {
         } catch {
             NSWorkspace.shared.open(dmgURL)
             sendState(error: "自动安装更新失败：\(error.localizedDescription)。已打开安装包。", includeStore: false)
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard downloadTask == updateDownloadTask else { return }
+        let progress: Double? = totalBytesExpectedToWrite > 0
+            ? min(99, max(0, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite) * 100))
+            : nil
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.sendUpdateState(
+                stage: "downloading",
+                message: "正在下载更新...",
+                latestVersion: self.pendingUpdateRelease.map { normalizedVersion($0.tagName) },
+                tagName: self.pendingUpdateRelease?.tagName,
+                assetName: self.updateDownloadAssetName,
+                progress: progress,
+                bytesReceived: totalBytesWritten,
+                bytesExpected: totalBytesExpectedToWrite > 0 ? totalBytesExpectedToWrite : nil
+            )
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        guard downloadTask == updateDownloadTask else { return }
+        if let httpResponse = downloadTask.response as? HTTPURLResponse,
+           !(200..<300).contains(httpResponse.statusCode) {
+            DispatchQueue.main.async { [weak self] in
+                self?.sendUpdateState(stage: "error", message: "下载更新失败：GitHub 返回 \(httpResponse.statusCode)。")
+            }
+            return
+        }
+
+        let destinationURL: URL
+        do {
+            let downloadDirectory = try updateDownloadDirectory()
+            destinationURL = uniqueDownloadURL(
+                in: downloadDirectory,
+                filename: updateDownloadAssetName ?? "MockKit.dmg"
+            )
+            try? FileManager.default.removeItem(at: destinationURL)
+            try FileManager.default.moveItem(at: location, to: destinationURL)
+        } catch {
+            DispatchQueue.main.async { [weak self] in
+                self?.sendUpdateState(stage: "error", message: "保存更新失败：\(error.localizedDescription)")
+            }
+            return
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.downloadedUpdateURL = destinationURL
+            self.updateDownloadCompleted = true
+            self.sendUpdateState(
+                stage: "downloaded",
+                message: "更新已下载，点击完成更新后将重启 MockKit。",
+                latestVersion: self.pendingUpdateRelease.map { normalizedVersion($0.tagName) },
+                tagName: self.pendingUpdateRelease?.tagName,
+                assetName: self.updateDownloadAssetName,
+                progress: 100
+            )
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        guard task == updateDownloadTask else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            defer {
+                self.updateDownloadTask = nil
+                self.updateDownloadWasCancelled = false
+            }
+            if self.updateDownloadCompleted {
+                return
+            }
+            if let error {
+                let nsError = error as NSError
+                if self.updateDownloadWasCancelled || nsError.code == NSURLErrorCancelled {
+                    self.sendUpdateState(stage: "cancelled", message: "下载已停止，可稍后重新检查。")
+                } else {
+                    self.sendUpdateState(stage: "error", message: "下载更新失败：\(error.localizedDescription)")
+                }
+            }
         }
     }
 
@@ -1280,6 +1526,7 @@ final class Bridge: NSObject, WKScriptMessageHandler {
     }
 
     private func saveStoreNow(_ rawStore: Any?) throws {
+        let previousLanguage = store.uiSettings?.language
         let requestedAiEnabled = ((rawStore as? [String: Any])?["aiSettings"] as? [String: Any])?["enabled"] as? Bool
         let data = try JSONSerialization.data(withJSONObject: rawStore ?? [:])
         var nextStore = try JSONDecoder().decode(Store.self, from: data)
@@ -1301,7 +1548,78 @@ final class Bridge: NSObject, WKScriptMessageHandler {
         }
         _ = try storeController.publish(store: nextStore)
         store = nextStore
+        if previousLanguage != store.uiSettings?.language {
+            NotificationCenter.default.post(name: menuLanguageDidChangeNotification, object: nil)
+        }
         sendState()
+    }
+
+    private func sendUpdateAvailable(release: GitHubRelease, currentVersion: String, latestVersion: String) {
+        let asset = preferredReleaseAsset(from: release)
+        sendUpdateState(
+            stage: "available",
+            message: "发现新版本 \(release.tagName)。",
+            currentVersion: currentVersion,
+            latestVersion: latestVersion,
+            tagName: release.tagName,
+            assetName: asset?.name,
+            releaseURL: release.htmlURL,
+            progress: 0
+        )
+    }
+
+    private func sendDownloadedUpdateReady(downloadedUpdateURL: URL) {
+        sendUpdateState(
+            stage: "downloaded",
+            message: "更新已下载，点击重启更新后将安装新版本。",
+            latestVersion: pendingUpdateRelease.map { normalizedVersion($0.tagName) },
+            tagName: pendingUpdateRelease?.tagName,
+            assetName: updateDownloadAssetName ?? downloadedUpdateURL.lastPathComponent,
+            progress: 100
+        )
+    }
+
+    private func sendUpdateState(
+        stage: String,
+        message: String,
+        currentVersion: String? = nil,
+        latestVersion: String? = nil,
+        tagName: String? = nil,
+        assetName: String? = nil,
+        releaseURL: String? = nil,
+        progress: Double? = nil,
+        bytesReceived: Int64? = nil,
+        bytesExpected: Int64? = nil
+    ) {
+        var updateInfo: [String: Any] = [
+            "stage": stage,
+            "message": message
+        ]
+        if let currentVersion {
+            updateInfo["currentVersion"] = currentVersion
+        }
+        if let latestVersion {
+            updateInfo["latestVersion"] = latestVersion
+        }
+        if let tagName {
+            updateInfo["tagName"] = tagName
+        }
+        if let assetName {
+            updateInfo["assetName"] = assetName
+        }
+        if let releaseURL {
+            updateInfo["releaseURL"] = releaseURL
+        }
+        if let progress {
+            updateInfo["progress"] = progress
+        }
+        if let bytesReceived {
+            updateInfo["bytesReceived"] = bytesReceived
+        }
+        if let bytesExpected {
+            updateInfo["bytesExpected"] = bytesExpected
+        }
+        sendState(extra: ["updateInfo": updateInfo], includeStore: false)
     }
 
     private func sendState(
@@ -1365,6 +1683,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         bridge = Bridge()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(refreshMainMenuLocalization(_:)),
+            name: menuLanguageDidChangeNotification,
+            object: nil
+        )
         configureMainMenu()
         installKeyboardShortcuts()
 
@@ -1408,18 +1732,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
 
     private func configureMainMenu() {
         let mainMenu = NSMenu()
+        let usesEnglish = bridge.currentLanguage() == "en-US"
 
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         let quitItem = appMenu.addItem(
-            withTitle: "Quit \(appDisplayName)",
+            withTitle: usesEnglish ? "Quit \(appDisplayName)" : "退出 \(appDisplayName)",
             action: #selector(NSApplication.terminate(_:)),
             keyEquivalent: "q"
         )
         quitItem.target = NSApp
         appMenu.insertItem(.separator(), at: 0)
         let settingsItem = appMenu.insertItem(
-            withTitle: "Settings...",
+            withTitle: usesEnglish ? "Settings" : "设置",
             action: #selector(openSettings(_:)),
             keyEquivalent: ",",
             at: 0
@@ -1427,14 +1752,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         settingsItem.target = self
         settingsItem.keyEquivalentModifierMask = [.command]
         let installCliItem = appMenu.insertItem(
-            withTitle: "Install Command Line Tool",
+            withTitle: usesEnglish ? "Install Command Line Tool" : "安装命令行工具",
             action: #selector(installCommandLineTool(_:)),
             keyEquivalent: "",
             at: 1
         )
         installCliItem.target = self
         let checkForUpdatesItem = appMenu.insertItem(
-            withTitle: "检查更新...",
+            withTitle: usesEnglish ? "Check for Updates" : "检查更新",
             action: #selector(checkForUpdates(_:)),
             keyEquivalent: "",
             at: 2
@@ -1444,22 +1769,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         mainMenu.addItem(appItem)
 
         let editItem = NSMenuItem()
-        let editMenu = NSMenu(title: "Edit")
-        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-        editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        let editMenu = NSMenu(title: usesEnglish ? "Edit" : "编辑")
+        editMenu.addItem(withTitle: usesEnglish ? "Undo" : "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: usesEnglish ? "Redo" : "重做", action: Selector(("redo:")), keyEquivalent: "Z")
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: usesEnglish ? "Cut" : "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: usesEnglish ? "Copy" : "复制", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: usesEnglish ? "Paste" : "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(.separator())
-        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(withTitle: usesEnglish ? "Select All" : "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
 
         let developItem = NSMenuItem()
-        let developMenu = NSMenu(title: "Develop")
+        let developMenu = NSMenu(title: usesEnglish ? "Develop" : "开发")
         let inspectorItem = developMenu.addItem(
-            withTitle: "Show Web Inspector",
+            withTitle: usesEnglish ? "Show Web Inspector" : "显示 Web 检查器",
             action: #selector(openWebInspector(_:)),
             keyEquivalent: "i"
         )
@@ -1469,6 +1794,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         mainMenu.addItem(developItem)
 
         NSApp.mainMenu = mainMenu
+    }
+
+    @objc private func refreshMainMenuLocalization(_ notification: Notification) {
+        configureMainMenu()
     }
 
     private func installKeyboardShortcuts() {
@@ -1531,6 +1860,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         if let keyDownMonitor {
             NSEvent.removeMonitor(keyDownMonitor)
         }
+        NotificationCenter.default.removeObserver(self)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -1747,17 +2077,6 @@ private func isRunningDevelopmentFrontend() -> Bool {
         return true
     }
     return ProcessInfo.processInfo.arguments.contains("--frontend-dev-server")
-}
-
-private func releaseTag(from url: URL) -> String? {
-    let components = url.pathComponents
-    guard
-        let tagIndex = components.firstIndex(of: "tag"),
-        components.indices.contains(components.index(after: tagIndex))
-    else {
-        return nil
-    }
-    return components[components.index(after: tagIndex)].removingPercentEncoding
 }
 
 private func githubReleaseFromRedirect(tagName: String, releaseURL: URL) -> GitHubRelease {

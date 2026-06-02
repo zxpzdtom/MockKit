@@ -656,7 +656,15 @@ fn default_overrides_folder() -> String {
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| {
             env::var("HOME")
-                .map(|home| format!("{home}/Desktop/mock"))
+                .map(|home| {
+                    PathBuf::from(home)
+                        .join("Library")
+                        .join("Application Support")
+                        .join(APP_NAME)
+                        .join("Overrides")
+                        .to_string_lossy()
+                        .to_string()
+                })
                 .unwrap_or_else(|_| "mock".to_string())
         })
 }

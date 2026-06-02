@@ -14,8 +14,7 @@ function isToastGuardEvent(event: Event) {
   const eventWithDetail = event as Event & { detail?: { originalEvent?: Event } };
   const target = eventWithDetail.detail?.originalEvent?.target ?? event.target;
   return (
-    target instanceof Element &&
-    Boolean(target.closest("[data-mockkit-toast-guard], .mockkit-error-toast"))
+    target instanceof Element && Boolean(target.closest("[data-mockkit-toast-guard], .mockkit-error-toast"))
   );
 }
 

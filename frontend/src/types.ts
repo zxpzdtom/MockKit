@@ -107,6 +107,7 @@ export interface NativePayload {
   aiGroupingPreview?: AiGroupingPreview;
   aiGroupingRequestId?: string;
   aiProgress?: AiProgress;
+  updateInfo?: UpdateInfo;
 }
 
 export interface NativeMessage {
@@ -120,6 +121,29 @@ export interface NativeMessage {
   aiMetadataRequest?: AiMetadataRequest;
   aiGroupingRequest?: AiGroupingRequest;
   aiGroupingRequestId?: string;
+}
+
+export interface UpdateInfo {
+  stage:
+    | "checking"
+    | "available"
+    | "notAvailable"
+    | "downloading"
+    | "downloaded"
+    | "installing"
+    | "cancelled"
+    | "skipped"
+    | "error"
+    | string;
+  message: string;
+  currentVersion?: string;
+  latestVersion?: string;
+  tagName?: string;
+  assetName?: string;
+  releaseURL?: string;
+  progress?: number;
+  bytesReceived?: number;
+  bytesExpected?: number;
 }
 
 export interface AiRequest {
