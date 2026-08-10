@@ -71,7 +71,9 @@ const zh = {
     copiedDirectoryPath: "已复制目录路径",
     showInFinder: "在访达中显示",
     deleteDirectory: "删除目录",
+    deleteDirectories: (count: number) => `删除 ${count} 个目录`,
     clearRoot: "清空根目录",
+    rootEmpty: "Overrides 根目录为空",
   },
   createGroup: {
     title: "新建业务分组",
@@ -81,11 +83,16 @@ const zh = {
     create: "新建",
   },
   deleteConfirm: {
+    irreversible: "此操作无法撤销。",
+    directoryList: "将删除的目录",
+    endpointList: "受影响的接口",
+    moreItems: (count: number) => `还有 ${count} 项`,
     endpointTitle: "删除接口？",
     caseTitle: "删除返回场景？",
     bulkTitle: "批量删除接口？",
     clearRootTitle: "清空根目录？",
     directoryTitle: "删除目录？",
+    directoriesTitle: "批量删除目录？",
     endpointDescription: (name: string) => `确定删除接口「${name}」吗？`,
     caseDescription: (name: string) => `确定删除返回场景「${name}」吗？`,
     bulkDescription: (count: number) => `确定删除选中的 ${count} 个接口吗？`,
@@ -94,6 +101,8 @@ const zh = {
     emptyDirectoryDescription: (name: string) => `确定删除空目录「${name}」吗？`,
     directoryDescription: (name: string, count: number) =>
       `确定删除目录「${name}」及其中的 ${count} 个接口吗？`,
+    directoriesDescription: (directoryCount: number, endpointCount: number) =>
+      `将删除选中的 ${directoryCount} 个目录，以及其中的 ${endpointCount} 个接口。`,
   },
   importCurl: {
     title: "导入 cURL",
@@ -310,7 +319,9 @@ const en: typeof zh = {
     copiedDirectoryPath: "Directory path copied",
     showInFinder: "Show in Finder",
     deleteDirectory: "Delete directory",
+    deleteDirectories: (count) => `Delete ${count} directories`,
     clearRoot: "Clear root",
+    rootEmpty: "Overrides root is empty",
   },
   createGroup: {
     title: "New Business Group",
@@ -320,11 +331,16 @@ const en: typeof zh = {
     create: "Create",
   },
   deleteConfirm: {
+    irreversible: "This action cannot be undone.",
+    directoryList: "Directories to delete",
+    endpointList: "Affected endpoints",
+    moreItems: (count) => `${count} more items`,
     endpointTitle: "Delete Endpoint?",
     caseTitle: "Delete Response Case?",
     bulkTitle: "Delete Endpoints?",
     clearRootTitle: "Clear Root?",
     directoryTitle: "Delete Directory?",
+    directoriesTitle: "Delete Directories?",
     endpointDescription: (name) => `Delete endpoint "${name}"?`,
     caseDescription: (name) => `Delete response case "${name}"?`,
     bulkDescription: (count) => `Delete ${count} selected ${count === 1 ? "endpoint" : "endpoints"}?`,
@@ -333,6 +349,8 @@ const en: typeof zh = {
     emptyDirectoryDescription: (name) => `Delete empty directory "${name}"?`,
     directoryDescription: (name, count) =>
       `Delete directory "${name}" and its ${count} ${count === 1 ? "endpoint" : "endpoints"}?`,
+    directoriesDescription: (directoryCount, endpointCount) =>
+      `This will delete ${directoryCount} selected directories and their ${endpointCount} ${endpointCount === 1 ? "endpoint" : "endpoints"}.`,
   },
   importCurl: {
     title: "Import cURL",

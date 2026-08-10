@@ -14,20 +14,20 @@
   <a href="./LICENSE">License</a>
 </p>
 
-MockKit helps frontend developers turn Chrome Local Overrides into a manageable mock workspace. It scans an Overrides folder, groups endpoints, keeps multiple response cases per endpoint, and publishes the active case back to Chrome without running a proxy.
+MockKit helps frontend developers turn Chrome Local Overrides into a manageable mock workspace. It scans an Overrides folder, groups endpoints, keeps multiple response cases per endpoint, and applies the active case to Chrome without running a proxy.
 
 The app does not hook `fetch` or `XMLHttpRequest`. It manages files in the Chrome Overrides folder directly.
 
 ## Highlights
 
-- **Chrome Overrides workspace** for binding, scanning, editing, and publishing mock files.
+- **Chrome Overrides workspace** for binding, scanning, editing, and applying mock files.
 - **Endpoint groups** with tree and list views for keeping large Overrides folders readable.
-- **Multiple response cases** per endpoint, including quick switching and publish workflows.
+- **Multiple response cases** per endpoint, including quick switching with immediate application.
 - **cURL import** for creating endpoints from browser or proxy captures.
 - **AI helpers** for endpoint naming, response generation, and business-domain grouping.
 - **Chinese / English UI** with local preference storage.
 - **Theme presets** built from shadcn-style tokens.
-- **CLI support** for scanning, importing, editing, switching cases, publishing, and disabling mocks from terminal scripts.
+- **CLI support** for scanning, importing, editing, switching cases, applying, and disabling mocks from terminal scripts.
 - **App updates** through GitHub Releases, with an in-app update dialog, download progress, skip-version support, and restart-to-install.
 - **Local-first storage**. App data and API keys are stored locally by default.
 
@@ -39,7 +39,7 @@ MockKit writes a hidden manifest into the Overrides folder:
 .mockkit-manifest.json
 ```
 
-The manifest records files managed by MockKit so disabling or publishing mocks does not delete unrelated files in the same Overrides folder.
+The manifest records files managed by MockKit so disabling or applying mocks does not delete unrelated files in the same Overrides folder.
 
 By default, MockKit uses an app-owned Overrides folder:
 
@@ -55,7 +55,7 @@ If Chrome DevTools already has a Local Overrides folder configured, MockKit foll
 2. Go to `Sources` -> `Overrides`.
 3. Select your Overrides folder.
 4. Allow Chrome to access the folder.
-5. Use MockKit to scan, edit, and publish response cases.
+5. Use MockKit to scan, edit, and apply response cases.
 
 Chrome applies Local Overrides only while DevTools is open for the current page.
 
@@ -84,12 +84,13 @@ Run commands directly from the debug binary:
 ./target/debug/mockkit status
 ./target/debug/mockkit list
 ./target/debug/mockkit show "example.com/api/users"
-./target/debug/mockkit scan
-./target/debug/mockkit publish
+./target/debug/mockkit sync
+./target/debug/mockkit apply
 ./target/debug/mockkit import-curl "curl 'https://example.com/api/users'"
-./target/debug/mockkit use "example.com/api/users" "Success" --publish
-./target/debug/mockkit disable "example.com/api/users" --publish
-./target/debug/mockkit enable --matching "users" --publish
+./target/debug/mockkit use "example.com/api/users" "Success"
+./target/debug/mockkit disable "example.com/api/users"
+./target/debug/mockkit enable --matching "users"
+./target/debug/mockkit delete --group "Users" --dry-run
 ```
 
 After building the app bundle, open MockKit and choose:
@@ -104,17 +105,18 @@ New terminal windows can then run:
 mockkit status
 mockkit list
 mockkit show "example.com/api/users"
-mockkit publish
-mockkit use "example.com/api/users" "Success" --publish
+mockkit apply
+mockkit use "example.com/api/users" "Success"
 ```
 
 Useful options:
 
 ```bash
 mockkit --json status
-mockkit --store ./store.json --overrides ./overrides scan
+mockkit --store ./store.json --overrides ./overrides sync
 cat request.curl | mockkit import-curl --fetch
-cat users.json | mockkit case update "example.com/api/users" "Success" --body-stdin --publish
+cat users.json | mockkit case update "example.com/api/users" "Success" --body-stdin
+mockkit delete --matching "deprecated" --yes
 ```
 
 By default, the CLI reads the same store as the app:
@@ -123,7 +125,9 @@ By default, the CLI reads the same store as the app:
 ~/Library/Application Support/MockKit/store.json
 ```
 
-Override paths with `--store`, `--overrides`, `MOCKKIT_STORE_PATH`, or `MOCKKIT_OVERRIDES_FOLDER`.
+Mutating CLI commands apply to Overrides immediately. `mockkit apply` is only needed to repair files after external changes.
+
+Override paths with `--store`, `--overrides`, `MOCKKIT_STORE_PATH`, or `MOCKKIT_OVERRIDES_FOLDER`. The `--overrides` flag is scoped to the current command and does not rewrite the stored workspace path.
 
 ## Build
 
@@ -182,9 +186,9 @@ assets/                           App icons and icon source images
 ## Limits
 
 - Chrome Overrides matching follows Chrome's own rules.
-- Status code and headers are stored in the app model, but the first publishing path focuses on response bodies.
+- Status code and headers are stored in the app model, but the first apply path focuses on response bodies.
 - Same URL with different HTTP methods may not be distinguishable by Chrome Overrides.
-- You may need to refresh the page after publishing a case.
+- You may need to refresh the page after applying a case.
 
 ## License
 

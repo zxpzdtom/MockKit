@@ -179,7 +179,7 @@ function primitiveUnionType(values: unknown[]) {
 
 function normalizeGeneratedTypeScript(lines: string[]) {
   return lines
-    .join("\n")
+    .join("\n\n")
     .replace(/^type /gm, "export type ")
     .replace(/\bany\[\]/g, "unknown[]")
     .replace(/export type ([A-Za-z_$][\w$]*) = \{\n\}/g, "export type $1 = Record<string, unknown>;");

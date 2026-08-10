@@ -677,6 +677,18 @@ function isPathInside(path: string, parent: string) {
   return path === parent || path.startsWith(`${parent}/`);
 }
 
+function minimalDirectoryPaths(paths: Iterable<string>) {
+  const sorted = [...new Set([...paths].map(cleanGroupPath).filter(Boolean))].sort((left, right) => {
+    const depthDifference = left.split("/").length - right.split("/").length;
+    return depthDifference || left.localeCompare(right);
+  });
+  const minimal: string[] = [];
+  for (const path of sorted) {
+    if (!minimal.some((parent) => isPathInside(path, parent))) minimal.push(path);
+  }
+  return minimal;
+}
+
 function reparentPath(path: string, source: string, target: string) {
   const parts = source.split("/").filter(Boolean);
   const name = parts[parts.length - 1] ?? source;
@@ -813,6 +825,12 @@ export function App() {
   const [selectedEndpointIds, setSelectedEndpointIds] = useState(() => new Set<string>());
   const [selectionAnchorEndpointId, setSelectionAnchorEndpointId] = useState<string | null>(null);
   const [selectedDirectory, setSelectedDirectory] = useState(persistedUiState.selectedDirectory);
+  const [selectedDirectoryPaths, setSelectedDirectoryPaths] = useState(
+    () => new Set(persistedUiState.selectedDirectory ? [persistedUiState.selectedDirectory] : []),
+  );
+  const [selectionAnchorDirectoryPath, setSelectionAnchorDirectoryPath] = useState<string | null>(
+    persistedUiState.selectedDirectory || null,
+  );
   const [focusedTreeNodeId, setFocusedTreeNodeId] = useState(persistedUiState.focusedTreeNodeId);
   const [directoryViewMode, setDirectoryViewMode] = useState<DirectoryViewMode>(
     persistedUiState.directoryViewMode,
@@ -1062,6 +1080,13 @@ export function App() {
     () => visibleTreeNodes(displayedDirectoryTree, expandedDirectories),
     [displayedDirectoryTree, expandedDirectories],
   );
+  const selectableDirectoryPaths = useMemo(
+    () =>
+      visibleDirectories
+        .filter((node) => node.type === "directory" && Boolean(node.path))
+        .map((node) => node.path),
+    [visibleDirectories],
+  );
   const directoryEndpoints = useMemo(
     () => endpoints.filter((item) => isEndpointInDirectory(item, selectedDirectory)),
     [endpoints, selectedDirectory],
@@ -1141,10 +1166,23 @@ export function App() {
   }, [endpoints]);
 
   useEffect(() => {
+    const visiblePaths = new Set(selectableDirectoryPaths);
+    setSelectedDirectoryPaths((current) => {
+      const next = new Set([...current].filter((path) => visiblePaths.has(path)));
+      return next.size === current.size ? current : next;
+    });
+    setSelectionAnchorDirectoryPath((current) =>
+      current && visiblePaths.has(current) ? current : null,
+    );
+  }, [selectableDirectoryPaths]);
+
+  useEffect(() => {
     if (!store || availableDirectoryPaths.has(selectedDirectory)) return;
     const selectedEndpoint = endpoints.find((item) => item.id === selectedEndpointId);
     const nextDirectory = selectedEndpoint ? getEndpointDirectoryPath(selectedEndpoint) : "";
     setSelectedDirectory(nextDirectory);
+    setSelectedDirectoryPaths(nextDirectory ? new Set([nextDirectory]) : new Set());
+    setSelectionAnchorDirectoryPath(nextDirectory || null);
     setFocusedTreeNodeId(
       selectedEndpoint ? endpointTreeNodeKey(selectedEndpoint.id) : directoryTreeNodeKey(nextDirectory),
     );
@@ -1224,6 +1262,71 @@ export function App() {
   const selectDirectory = (path: string) => {
     setFocusedTreeNodeId(directoryTreeNodeKey(path));
     setSelectedDirectory(path);
+    setSelectedDirectoryPaths(path ? new Set([path]) : new Set());
+    setSelectionAnchorDirectoryPath(path || null);
+  };
+
+  const selectDirectoryRange = (path: string, additive: boolean) => {
+    const anchorPath =
+      selectionAnchorDirectoryPath && selectableDirectoryPaths.includes(selectionAnchorDirectoryPath)
+        ? selectionAnchorDirectoryPath
+        : selectableDirectoryPaths.includes(selectedDirectory)
+          ? selectedDirectory
+          : path;
+    const anchorIndex = selectableDirectoryPaths.indexOf(anchorPath);
+    const pathIndex = selectableDirectoryPaths.indexOf(path);
+    if (anchorIndex < 0 || pathIndex < 0) {
+      setSelectedDirectoryPaths(new Set([path]));
+      setSelectionAnchorDirectoryPath(path);
+      return;
+    }
+    const start = Math.min(anchorIndex, pathIndex);
+    const end = Math.max(anchorIndex, pathIndex);
+    const range = selectableDirectoryPaths.slice(start, end + 1);
+    setSelectedDirectoryPaths((current) => new Set(additive ? [...current, ...range] : range));
+  };
+
+  const handleDirectorySelectionGesture = (
+    path: string,
+    event: ReactMouseEvent<HTMLButtonElement>,
+  ) => {
+    if (!path) {
+      selectDirectory("");
+      return;
+    }
+
+    setFocusedTreeNodeId(directoryTreeNodeKey(path));
+    setSelectedDirectory(path);
+    if (event.shiftKey) {
+      selectDirectoryRange(path, event.metaKey || event.ctrlKey);
+      return;
+    }
+    if (event.metaKey || event.ctrlKey) {
+      setSelectedDirectoryPaths((current) => {
+        const next = new Set(current);
+        if (next.has(path)) next.delete(path);
+        else next.add(path);
+        return next;
+      });
+      setSelectionAnchorDirectoryPath(path);
+      return;
+    }
+    setSelectedDirectoryPaths(new Set([path]));
+    setSelectionAnchorDirectoryPath(path);
+  };
+
+  const prepareDirectoryContextMenu = (path: string) => {
+    setFocusedTreeNodeId(directoryTreeNodeKey(path));
+    setSelectedDirectory(path);
+    if (!path) {
+      setSelectedDirectoryPaths(new Set());
+      setSelectionAnchorDirectoryPath(null);
+      return;
+    }
+    if (!selectedDirectoryPaths.has(path)) {
+      setSelectedDirectoryPaths(new Set([path]));
+      setSelectionAnchorDirectoryPath(path);
+    }
   };
 
   const scrollTreeNodeIntoView = (key: string) => {
@@ -1246,6 +1349,18 @@ export function App() {
   };
 
   const handleDirectoryKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape") {
+      const primarySelectionMatches = selectedDirectory
+        ? selectedDirectoryPaths.size === 1 && selectedDirectoryPaths.has(selectedDirectory)
+        : selectedDirectoryPaths.size === 0;
+      if (primarySelectionMatches) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      setSelectedDirectoryPaths(selectedDirectory ? new Set([selectedDirectory]) : new Set());
+      setSelectionAnchorDirectoryPath(selectedDirectory || null);
+      return;
+    }
     if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter", " "].includes(event.key)) return;
     const selectedFileKey = endpointTreeNodeKey(selectedEndpointId ?? undefined);
     const preferredKey = visibleDirectories.some((node) => treeNodeKey(node) === focusedTreeNodeId)
@@ -1320,6 +1435,8 @@ export function App() {
     if (!cleanPath) return;
     if (storeRef.current?.groupPaths?.includes(cleanPath)) {
       setSelectedDirectory(cleanPath);
+      setSelectedDirectoryPaths(new Set([cleanPath]));
+      setSelectionAnchorDirectoryPath(cleanPath);
       setCreateGroupOpen(false);
       showToast(copy.main.groupExists);
       return;
@@ -1337,6 +1454,8 @@ export function App() {
       return next;
     });
     setSelectedDirectory(cleanPath);
+    setSelectedDirectoryPaths(new Set([cleanPath]));
+    setSelectionAnchorDirectoryPath(cleanPath);
     setCreateGroupOpen(false);
     setCreateGroupDraft("");
   };
@@ -1378,6 +1497,8 @@ export function App() {
       return next;
     });
     setSelectedDirectory(nextSelectedDirectory);
+    setSelectedDirectoryPaths(nextSelectedDirectory ? new Set([nextSelectedDirectory]) : new Set());
+    setSelectionAnchorDirectoryPath(nextSelectedDirectory || null);
   };
 
   const persist = useCallback((nextStore: Store) => {
@@ -1434,7 +1555,7 @@ export function App() {
     setSelectionAnchorEndpointId(endpointId);
   };
 
-  const selectEndpointRange = (endpointId: string, checked = true) => {
+  const selectEndpointRange = (endpointId: string, checked = true, additive = false) => {
     const anchorId = selectionAnchorEndpointId ?? selectedEndpointId ?? endpointId;
     const anchorIndex = filteredEndpoints.findIndex((item) => item.id === anchorId);
     const targetIndex = filteredEndpoints.findIndex((item) => item.id === endpointId);
@@ -1446,7 +1567,7 @@ export function App() {
     const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
     const rangeIds = filteredEndpoints.slice(start, end + 1).map((item) => item.id);
     setSelectedEndpointIds((current) => {
-      const next = new Set(current);
+      const next = new Set(additive ? current : []);
       for (const id of rangeIds) {
         if (checked) next.add(id);
         else next.delete(id);
@@ -1457,7 +1578,7 @@ export function App() {
 
   const handleEndpointSelectionGesture = (endpointId: string, event: ReactMouseEvent, checked?: boolean) => {
     if (event.shiftKey) {
-      selectEndpointRange(endpointId, checked ?? true);
+      selectEndpointRange(endpointId, checked ?? true, event.metaKey || event.ctrlKey || checked === false);
       return;
     }
 
@@ -1473,6 +1594,7 @@ export function App() {
 
     setSelectedEndpointId(item.id);
     setSelectedCaseId(item.activeCaseId ?? item.cases[0]?.id ?? null);
+    setSelectedEndpointIds(new Set());
     setSelectionAnchorEndpointId(item.id);
     setFocusedTreeNodeId(endpointTreeNodeKey(item.id));
   };
@@ -1480,8 +1602,11 @@ export function App() {
   const selectEndpointFromTree = (endpointId?: string) => {
     const item = endpoints.find((candidate) => candidate.id === endpointId);
     if (!item) return;
+    const directoryPath = getEndpointDirectoryPath(item);
     setFocusedTreeNodeId(endpointTreeNodeKey(item.id));
-    setSelectedDirectory(getEndpointDirectoryPath(item));
+    setSelectedDirectory(directoryPath);
+    setSelectedDirectoryPaths(directoryPath ? new Set([directoryPath]) : new Set());
+    setSelectionAnchorDirectoryPath(directoryPath || null);
     setSelectedEndpointId(item.id);
     setSelectedCaseId(item.activeCaseId ?? item.cases[0]?.id ?? null);
     setSelectionAnchorEndpointId(item.id);
@@ -1495,7 +1620,11 @@ export function App() {
   const deleteSelectedEndpoints = () => {
     if (selectedEndpointIds.size === 0) return;
     const count = selectedEndpointIds.size;
-    setDeleteTarget({ type: "bulk", endpointIds: [...selectedEndpointIds], count });
+    const endpointIds = [...selectedEndpointIds];
+    const endpointNames = endpoints
+      .filter((item) => selectedEndpointIds.has(item.id))
+      .map((item) => item.name || item.overridePath);
+    setDeleteTarget({ type: "bulk", endpointIds, endpointNames, count });
   };
 
   const getEndpointContextIds = (item: Endpoint) =>
@@ -1505,7 +1634,7 @@ export function App() {
     setSelectedEndpointId(item.id);
     setSelectedCaseId(item.activeCaseId ?? item.cases[0]?.id ?? null);
     if (!selectedEndpointIds.has(item.id)) {
-      setSelectedEndpointIds(new Set());
+      setSelectedEndpointIds(new Set([item.id]));
       setSelectionAnchorEndpointId(item.id);
     }
   };
@@ -1518,6 +1647,8 @@ export function App() {
       return next;
     });
     setSelectedDirectory(directoryPath);
+    setSelectedDirectoryPaths(directoryPath ? new Set([directoryPath]) : new Set());
+    setSelectionAnchorDirectoryPath(directoryPath || null);
     setSelectedEndpointId(item.id);
     setSelectedCaseId(item.activeCaseId ?? item.cases[0]?.id ?? null);
     setSelectionAnchorEndpointId(item.id);
@@ -1548,7 +1679,10 @@ export function App() {
   const requestDeleteEndpointFromList = (item: Endpoint) => {
     const endpointIds = getEndpointContextIds(item);
     if (endpointIds.length > 1) {
-      setDeleteTarget({ type: "bulk", endpointIds, count: endpointIds.length });
+      const endpointNames = endpoints
+        .filter((endpoint) => endpointIds.includes(endpoint.id))
+        .map((endpoint) => endpoint.name || endpoint.overridePath);
+      setDeleteTarget({ type: "bulk", endpointIds, endpointNames, count: endpointIds.length });
       return;
     }
     setDeleteTarget({ type: "endpoint", endpointId: item.id, name: item.name || copy.main.unnamedEndpoint });
@@ -1559,16 +1693,39 @@ export function App() {
   };
 
   const requestDeleteDirectory = (path: string) => {
-    const directoryEndpointIds = endpoints
-      .filter((item) => isEndpointInDirectory(item, path))
-      .map((item) => item.id);
-    const pathParts = path.split("/").filter(Boolean);
+    const selectedPaths =
+      path && selectedDirectoryPaths.has(path)
+        ? minimalDirectoryPaths(selectedDirectoryPaths)
+        : path
+          ? [path]
+          : [];
+    if (selectedPaths.length > 1) {
+      const directoryEndpoints = endpoints.filter((item) =>
+        selectedPaths.some((selectedPath) => isEndpointInDirectory(item, selectedPath)),
+      );
+      setDeleteTarget({
+        type: "directories",
+        paths: selectedPaths,
+        directoryNames: selectedPaths,
+        endpointIds: directoryEndpoints.map((item) => item.id),
+        endpointNames: directoryEndpoints.map((item) => item.name || item.overridePath),
+        directoryCount: selectedPaths.length,
+        endpointCount: directoryEndpoints.length,
+      });
+      return;
+    }
+
+    const targetPath = selectedPaths[0] ?? path;
+    const directoryEndpoints = endpoints.filter((item) => isEndpointInDirectory(item, targetPath));
+    const directoryEndpointIds = directoryEndpoints.map((item) => item.id);
+    const pathParts = targetPath.split("/").filter(Boolean);
     const name = pathParts[pathParts.length - 1] ?? copy.directories.root;
     setDeleteTarget({
       type: "directory",
-      path,
+      path: targetPath,
       name,
       endpointIds: directoryEndpointIds,
+      endpointNames: directoryEndpoints.map((item) => item.name || item.overridePath),
       count: directoryEndpointIds.length,
     });
   };
@@ -1614,6 +1771,8 @@ export function App() {
       return next;
     });
     setSelectedDirectory(parentPath);
+    setSelectedDirectoryPaths(parentPath ? new Set([parentPath]) : new Set());
+    setSelectionAnchorDirectoryPath(parentPath || null);
     setSelectedEndpointIds(new Set());
     setSelectedEndpointId(nextSelectedEndpointId);
     setSelectedCaseId(null);
@@ -1621,7 +1780,7 @@ export function App() {
       showToast(
         target.count > 0
           ? `${copy.directories.clearRoot}: ${copy.common.endpointsWithCount(target.count)}.`
-          : `${copy.directories.root} is empty.`,
+          : `${copy.directories.rootEmpty}.`,
       );
       return;
     }
@@ -1629,6 +1788,48 @@ export function App() {
       target.count > 0
         ? `${copy.directories.deleteDirectory}: ${copy.common.endpointsWithCount(target.count)}.`
         : copy.directories.deleteDirectory,
+    );
+  };
+
+  const confirmDeleteDirectories = (target: Extract<DeleteTarget, { type: "directories" }>) => {
+    const paths = minimalDirectoryPaths(target.paths);
+    const ids = new Set(target.endpointIds);
+    const parentPath = parentDirectoryPath(paths[0] ?? "");
+    let nextSelectedEndpointId: string | null = null;
+    mutateStore((draft) => {
+      draft.endpoints = draft.endpoints.filter((item) => !ids.has(item.id));
+      draft.groupPaths = normalizeGroupPaths(
+        (draft.groupPaths ?? []).filter(
+          (groupPath) => !paths.some((path) => isPathInside(groupPath, path)),
+        ),
+      );
+      nextSelectedEndpointId =
+        selectedEndpointId && !ids.has(selectedEndpointId)
+          ? selectedEndpointId
+          : (draft.endpoints.find((item) => isEndpointInDirectory(item, parentPath))?.id ??
+            draft.endpoints[0]?.id ??
+            null);
+    });
+    setExpandedDirectories((current) => {
+      const next = new Set(
+        [...current].filter(
+          (expandedPath) => !paths.some((path) => isPathInside(expandedPath, path)),
+        ),
+      );
+      next.add(parentPath);
+      next.add("");
+      return next;
+    });
+    setSelectedDirectory(parentPath);
+    setSelectedDirectoryPaths(parentPath ? new Set([parentPath]) : new Set());
+    setSelectionAnchorDirectoryPath(parentPath || null);
+    setSelectedEndpointIds(new Set());
+    setSelectedEndpointId(nextSelectedEndpointId);
+    setSelectedCaseId(null);
+    showToast(
+      target.endpointCount > 0
+        ? `${copy.directories.deleteDirectories(target.directoryCount)}: ${copy.common.endpointsWithCount(target.endpointCount)}.`
+        : copy.directories.deleteDirectories(target.directoryCount),
     );
   };
 
@@ -1914,6 +2115,7 @@ export function App() {
     if (deleteTarget.type === "case") confirmDeleteCase(deleteTarget);
     if (deleteTarget.type === "bulk") confirmDeleteSelectedEndpoints(deleteTarget.endpointIds);
     if (deleteTarget.type === "directory") confirmDeleteDirectory(deleteTarget);
+    if (deleteTarget.type === "directories") confirmDeleteDirectories(deleteTarget);
     setDeleteTarget(null);
   };
 
@@ -2384,6 +2586,7 @@ export function App() {
                 aria-label={copy.directories.listAria}
                 className="min-h-0 flex-1 pr-1 scroll-mask-y-4 source-directory-scroll"
                 onKeyDown={handleDirectoryKeyDown}
+                aria-multiselectable="true"
                 role="tree"
                 tabIndex={0}
               >
@@ -2395,9 +2598,11 @@ export function App() {
                   node={displayedDirectoryTree}
                   overridesFolder={store.overridesFolder}
                   selectedDirectoryPath={selectedDirectory}
+                  selectedDirectoryPaths={selectedDirectoryPaths}
                   selectedEndpointId={selectedEndpointId}
                   onDragOverPath={setDragOverDirectory}
-                  onSelect={selectDirectory}
+                  onPrepareDirectoryContextMenu={prepareDirectoryContextMenu}
+                  onSelect={handleDirectorySelectionGesture}
                   onMoveDirectory={moveDirectory}
                   onRequestDeleteDirectory={requestDeleteDirectory}
                   onRequestDeleteEndpoint={requestDeleteEndpointFromTree}
@@ -3308,12 +3513,14 @@ interface DirectoryNodeProps {
   node: TreeNode;
   overridesFolder: string;
   selectedDirectoryPath: string;
+  selectedDirectoryPaths: Set<string>;
   selectedEndpointId: string | null;
   onDragOverPath(path: string | null): void;
   onMoveDirectory(sourcePath: string, targetPath: string): void;
+  onPrepareDirectoryContextMenu(path: string): void;
   onRequestDeleteDirectory(path: string): void;
   onRequestDeleteEndpoint(item: Endpoint): void;
-  onSelect(path: string): void;
+  onSelect(path: string, event: ReactMouseEvent<HTMLButtonElement>): void;
   onSelectEndpoint(endpointId?: string): void;
   onSetEnabled(path: string, enabled: boolean): void;
   onSetEndpointEnabled(endpointId: string, enabled: boolean): void;
@@ -3329,9 +3536,11 @@ function DirectoryNode({
   node,
   overridesFolder,
   selectedDirectoryPath,
+  selectedDirectoryPaths,
   selectedEndpointId,
   onDragOverPath,
   onMoveDirectory,
+  onPrepareDirectoryContextMenu,
   onRequestDeleteDirectory,
   onRequestDeleteEndpoint,
   onSelect,
@@ -3351,6 +3560,7 @@ function DirectoryNode({
   const hasChildren = node.children.length > 0;
   const active =
     node.type === "file" ? node.endpointId === selectedEndpointId : node.path === selectedDirectoryPath;
+  const selected = node.type === "directory" && Boolean(node.path) && selectedDirectoryPaths.has(node.path);
   const focused = treeNodeKey(node) === focusedNodeId;
   const dropActive = dragOverPath === node.path;
   const currentDirectoryPath = node.path ? `${overridesFolder}/${node.path}` : overridesFolder;
@@ -3453,10 +3663,19 @@ function DirectoryNode({
           {hasChildren ? <ChevronRight size={12} /> : null}
         </Button>
         <ContextMenu>
-          <ContextMenuTrigger className="source-context-trigger">
+          <ContextMenuTrigger
+            className="source-context-trigger"
+            onContextMenu={() => onPrepareDirectoryContextMenu(node.path)}
+          >
             <button
               aria-expanded={hasChildren ? expanded : undefined}
-              className={cn("source-row", active && "active", focused && "focused")}
+              aria-selected={selected || undefined}
+              className={cn(
+                "source-row",
+                selected && "selected",
+                active && "active",
+                focused && "focused",
+              )}
               data-directory-path={directoryDomId(node.path)}
               data-tree-node-id={treeNodeKey(node)}
               draggable={Boolean(node.path)}
@@ -3489,7 +3708,7 @@ function DirectoryNode({
                 const sourcePath = event.dataTransfer.getData("application/x-mockkit-directory");
                 if (sourcePath) onMoveDirectory(sourcePath, node.path);
               }}
-              onClick={() => onSelect(node.path)}
+              onClick={(event) => onSelect(node.path, event)}
               onDoubleClick={() => {
                 if (hasChildren) onToggle(node.path);
               }}
@@ -3524,7 +3743,13 @@ function DirectoryNode({
               {messages.showInFinder}
             </ContextMenuItem>
             <ContextMenuItem variant="destructive" onClick={() => onRequestDeleteDirectory(node.path)}>
-              {node.path ? messages.deleteDirectory : messages.clearRoot}
+              {node.path && selected
+                ? minimalDirectoryPaths(selectedDirectoryPaths).length > 1
+                  ? messages.deleteDirectories(minimalDirectoryPaths(selectedDirectoryPaths).length)
+                  : messages.deleteDirectory
+                : node.path
+                  ? messages.deleteDirectory
+                  : messages.clearRoot}
             </ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
@@ -3552,9 +3777,11 @@ function DirectoryNode({
                 node={child}
                 overridesFolder={overridesFolder}
                 selectedDirectoryPath={selectedDirectoryPath}
+                selectedDirectoryPaths={selectedDirectoryPaths}
                 selectedEndpointId={selectedEndpointId}
                 onDragOverPath={onDragOverPath}
                 onMoveDirectory={onMoveDirectory}
+                onPrepareDirectoryContextMenu={onPrepareDirectoryContextMenu}
                 onRequestDeleteDirectory={onRequestDeleteDirectory}
                 onRequestDeleteEndpoint={onRequestDeleteEndpoint}
                 onSelect={onSelect}

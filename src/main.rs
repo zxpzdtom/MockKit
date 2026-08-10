@@ -137,7 +137,7 @@ struct MockCase {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct PublishManifest {
+struct ManagedFilesManifest {
     managed_files: Vec<String>,
 }
 
@@ -281,7 +281,11 @@ fn main() {
 
 fn run_entry() -> Result<(), Box<dyn std::error::Error>> {
     let args = env::args().collect::<Vec<_>>();
-    if should_run_cli(&args) {
+    let executable_name = args
+        .first()
+        .and_then(|path| Path::new(path).file_stem())
+        .and_then(|name| name.to_str());
+    if executable_name == Some("mockkit") || should_run_cli(&args) {
         return run_cli(&args[1..]);
     }
     run_core_protocol(&args)
@@ -307,7 +311,7 @@ fn should_run_cli(args: &[String]) -> bool {
             | "get"
             | "scan"
             | "sync"
-            | "publish"
+            | "apply"
             | "disable"
             | "enable"
             | "edit"
@@ -390,10 +394,10 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                 ai_grouping_preview: None,
             }
         }
-        "publish" => {
+        "apply" => {
             let mut store = require_store(request.store)?;
             normalize_store(&mut store);
-            let written = publish(&store)?;
+            let written = apply_store(&store)?;
             CoreResponse {
                 store: Some(store),
                 imported: vec![],
@@ -449,7 +453,7 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                 request.fetch_response.unwrap_or(false),
             )?;
             write_store(&store_path, &store)?;
-            let _ = publish(&store)?;
+            let _ = apply_store(&store)?;
             CoreResponse {
                 store: Some(store),
                 imported: vec![],
@@ -540,7 +544,6 @@ struct CliOptions {
 fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let (options, remaining) = parse_cli_options(args)?;
     let command = remaining.first().map(String::as_str).unwrap_or("help");
-
     match command {
         "-h" | "--help" | "help" => {
             print_cli_help();
@@ -550,7 +553,8 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         "list" => cli_list(&options),
         "show" | "get" => cli_show(&options, &remaining[1..]),
         "scan" | "sync" => cli_scan(&options),
-        "publish" => cli_publish(&options),
+        "apply" => cli_apply(&options),
+        "delete" | "remove" | "rm" => cli_delete_endpoints(&options, &remaining[1..]),
         "disable" => cli_disable(&options, &remaining[1..]),
         "enable" => cli_set_enabled(&options, &remaining[1..], true),
         "edit" | "update" => cli_edit_endpoint(&options, &remaining[1..]),
@@ -685,12 +689,17 @@ fn load_cli_store(options: &CliOptions) -> Result<Store, Box<dyn std::error::Err
     if let Some(folder) = &options.overrides_folder {
         store.overrides_folder = folder.clone();
     }
-    write_store(&options.store_path, &store)?;
     Ok(store)
 }
 
 fn save_cli_store(options: &CliOptions, store: &Store) -> Result<(), Box<dyn std::error::Error>> {
-    write_store(&options.store_path, store)
+    let mut persisted_store = store.clone();
+    if options.overrides_folder.is_some() {
+        persisted_store.overrides_folder = read_store(&options.store_path)?
+            .map(|stored| stored.overrides_folder)
+            .unwrap_or_else(default_overrides_folder);
+    }
+    write_store(&options.store_path, &persisted_store)
 }
 
 fn print_cli_help() {
@@ -705,13 +714,17 @@ Commands:
   list                           List endpoints with short ids and active cases
   show <endpoint> [case]         Show one endpoint/case with full mock body
   show <endpoint> [case] --body  Print only the selected mock body
-  scan                           Import/update files from the Overrides folder
-  publish                        Write active enabled cases into Chrome Overrides
-  disable                        Disable all mocks and remove managed files
+  sync                           Import/update files from the Overrides folder
+  apply                          Reconcile Store state into Chrome Overrides
+  delete <endpoint...>           Delete one or more endpoints
+  delete --group <path>          Delete endpoints in a group and its subgroups
+  delete --matching <text>       Delete matching endpoints in batch
+  disable [--all]                Disable all mocks and remove managed files
   disable <endpoint...>          Disable one or more endpoints
   disable --group <path>         Disable endpoints in a group
   disable --matching <text>      Disable matching endpoints in batch
   enable <endpoint...>           Enable one or more endpoints
+  enable --all                   Enable all endpoints and the global mock switch
   enable --group <path>          Enable endpoints in a group
   enable --matching <text>       Enable matching endpoints in batch
   edit <endpoint> [options]      Edit endpoint title, description, path, method, group, or tags
@@ -719,8 +732,7 @@ Commands:
   case update <endpoint> <case>  Edit a response case name, body, status, or headers
   case delete <endpoint> <case>  Delete a response case
   import-curl [--fetch] <curl>   Import a cURL command as an endpoint
-  use <endpoint> <case>          Activate a case by endpoint id/name/path and case id/name
-  use <endpoint> <case> --publish
+  use <endpoint> <case>          Activate a case and apply it to Overrides immediately
 
 Edit options:
   --name <text>                  Set endpoint title
@@ -743,7 +755,9 @@ Case options:
   --headers-file <path>          Read response headers from a file; use - for stdin
   --activate                     Activate the case after update
   --no-activate                  Keep current active case after add
-  --publish                      Publish after saving
+Delete options:
+  --dry-run                      Preview matched endpoints without deleting
+  --yes                          Skip the interactive confirmation
 
 Environment:
   MOCKKIT_STORE_PATH             Override the default App Support store path
@@ -817,7 +831,7 @@ fn cli_list(options: &CliOptions) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     if store.endpoints.is_empty() {
-        println!("No endpoints yet. Run `mockkit scan` or `mockkit import-curl`.");
+        println!("No endpoints yet. Run `mockkit sync` or `mockkit import-curl`.");
         return Ok(());
     }
     for endpoint in &store.endpoints {
@@ -933,23 +947,23 @@ fn cli_scan(options: &CliOptions) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cli_publish(options: &CliOptions) -> Result<(), Box<dyn std::error::Error>> {
+fn cli_apply(options: &CliOptions) -> Result<(), Box<dyn std::error::Error>> {
     let store = load_cli_store(options)?;
-    let written = publish(&store)?;
+    let written = apply_store(&store)?;
     if options.json {
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({ "written": written }))?
         );
     } else {
-        println!("Published {} managed override files.", written.len());
+        println!("Applied {} managed override files.", written.len());
     }
     Ok(())
 }
 
 fn cli_disable(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if !args.is_empty() {
-        return cli_set_enabled(options, &args, false);
+    if !args.is_empty() && args != ["--all"] {
+        return cli_set_enabled(options, args, false);
     }
     let mut store = load_cli_store(options)?;
     disable(&mut store)?;
@@ -970,12 +984,11 @@ fn cli_set_enabled(
     args: &[String],
     enabled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let publish_after = args.iter().any(|arg| arg == "--publish");
     let mut specs = vec![];
     let mut index = 0usize;
     while index < args.len() {
         match args[index].as_str() {
-            "--publish" => {}
+            "--all" => specs.push(CliEndpointSelector::All),
             "--endpoint" | "-e" => {
                 index += 1;
                 let value = args.get(index).ok_or("--endpoint requires a value")?;
@@ -1028,6 +1041,13 @@ fn cli_set_enabled(
     }
 
     let mut store = load_cli_store(options)?;
+    if enabled
+        && specs
+            .iter()
+            .any(|selector| matches!(selector, CliEndpointSelector::All))
+    {
+        store.mock_enabled = true;
+    }
     let mut matched = matching_endpoint_indices(&store, &specs)?;
     matched.sort_unstable();
     matched.dedup();
@@ -1052,11 +1072,7 @@ fn cli_set_enabled(
         }
     }
     save_cli_store(options, &store)?;
-    let written = if publish_after {
-        publish(&store)?
-    } else {
-        vec![]
-    };
+    let written = apply_store(&store)?;
 
     if options.json {
         println!(
@@ -1066,7 +1082,6 @@ fn cli_set_enabled(
                 "matched": matched_count,
                 "updated": changed.len(),
                 "changed": changed,
-                "published": publish_after,
                 "written": written,
             }))?
         );
@@ -1077,11 +1092,225 @@ fn cli_set_enabled(
             changed.len(),
             matched_count
         );
-        if publish_after {
-            println!("Published {} managed override files.", written.len());
-        }
+        println!("Applied {} managed override files.", written.len());
     }
     Ok(())
+}
+
+fn cli_delete_endpoints(
+    options: &CliOptions,
+    args: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut selectors = vec![];
+    let mut group_paths = vec![];
+    let mut confirmed = false;
+    let mut dry_run = false;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--yes" => confirmed = true,
+            "--dry-run" => dry_run = true,
+            "--all" => selectors.push(CliEndpointSelector::All),
+            "--endpoint" | "-e" => {
+                index += 1;
+                let value = args.get(index).ok_or("--endpoint requires a value")?;
+                selectors.push(CliEndpointSelector::Endpoint(value.clone()));
+            }
+            value if value.starts_with("--endpoint=") => {
+                selectors.push(CliEndpointSelector::Endpoint(
+                    value.trim_start_matches("--endpoint=").to_string(),
+                ));
+            }
+            "--group" | "-g" => {
+                index += 1;
+                let value = args.get(index).ok_or("--group requires a value")?;
+                let clean_group = sanitized_relative_path(value);
+                group_paths.push(clean_group);
+                selectors.push(CliEndpointSelector::Group(value.clone()));
+            }
+            value if value.starts_with("--group=") => {
+                let value = value.trim_start_matches("--group=").to_string();
+                group_paths.push(sanitized_relative_path(&value));
+                selectors.push(CliEndpointSelector::Group(value));
+            }
+            "--matching" | "--match" | "-m" => {
+                index += 1;
+                let value = args.get(index).ok_or("--matching requires a value")?;
+                selectors.push(CliEndpointSelector::Matching(value.clone()));
+            }
+            value if value.starts_with("--matching=") => {
+                selectors.push(CliEndpointSelector::Matching(
+                    value.trim_start_matches("--matching=").to_string(),
+                ));
+            }
+            value if value.starts_with("--match=") => {
+                selectors.push(CliEndpointSelector::Matching(
+                    value.trim_start_matches("--match=").to_string(),
+                ));
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown option: {value}").into())
+            }
+            value => selectors.push(CliEndpointSelector::Endpoint(value.to_string())),
+        }
+        index += 1;
+    }
+
+    if selectors.is_empty() {
+        return Err("delete requires <endpoint>, --group, --matching, or --all".into());
+    }
+
+    let mut store = load_cli_store(options)?;
+    let mut matched = matching_endpoint_indices(&store, &selectors)?;
+    matched.sort_unstable();
+    matched.dedup();
+    if matched.is_empty() {
+        return Err("no endpoints matched".into());
+    }
+    let matched_endpoints = matched
+        .iter()
+        .map(|index| store.endpoints[*index].clone())
+        .collect::<Vec<_>>();
+
+    if dry_run {
+        print_cli_delete_preview(options, &matched_endpoints, true)?;
+        return Ok(());
+    }
+
+    if !options.json {
+        print_cli_delete_preview(options, &matched_endpoints, false)?;
+    }
+    if !confirm_cli_delete(
+        &format!(
+            "Delete {} matched {}?",
+            matched_endpoints.len(),
+            if matched_endpoints.len() == 1 {
+                "endpoint"
+            } else {
+                "endpoints"
+            }
+        ),
+        confirmed,
+        options.json,
+    )? {
+        println!("Delete cancelled.");
+        return Ok(());
+    }
+
+    let endpoint_ids = matched_endpoints
+        .iter()
+        .map(|endpoint| endpoint.id.clone())
+        .collect::<HashSet<_>>();
+    store
+        .endpoints
+        .retain(|endpoint| !endpoint_ids.contains(&endpoint.id));
+    if selectors
+        .iter()
+        .any(|selector| matches!(selector, CliEndpointSelector::All))
+    {
+        store.group_paths = Some(vec![]);
+    } else if !group_paths.is_empty() {
+        store.group_paths = Some(
+            store
+                .group_paths
+                .take()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|path| {
+                    !group_paths
+                        .iter()
+                        .any(|group| path == group || path.starts_with(&format!("{group}/")))
+                })
+                .collect(),
+        );
+    }
+    normalize_store(&mut store);
+    save_cli_store(options, &store)?;
+    let written = apply_store(&store)?;
+
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "deleted": matched_endpoints,
+                "deletedCount": endpoint_ids.len(),
+                "applied": true,
+                "written": written,
+            }))?
+        );
+    } else {
+        println!(
+            "Deleted {} {}.",
+            endpoint_ids.len(),
+            if endpoint_ids.len() == 1 {
+                "endpoint"
+            } else {
+                "endpoints"
+            }
+        );
+        println!("Applied {} managed override files.", written.len());
+    }
+    Ok(())
+}
+
+fn print_cli_delete_preview(
+    options: &CliOptions,
+    endpoints: &[Endpoint],
+    dry_run: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "dryRun": dry_run,
+                "matchedCount": endpoints.len(),
+                "endpoints": endpoints,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "Matched {} {}:",
+        endpoints.len(),
+        if endpoints.len() == 1 {
+            "endpoint"
+        } else {
+            "endpoints"
+        }
+    );
+    for endpoint in endpoints.iter().take(10) {
+        println!("  {}  {}", short_id(&endpoint.id), endpoint.override_path);
+    }
+    if endpoints.len() > 10 {
+        println!("  … and {} more", endpoints.len() - 10);
+    }
+    Ok(())
+}
+
+fn confirm_cli_delete(
+    prompt: &str,
+    confirmed: bool,
+    json_output: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    if confirmed {
+        return Ok(true);
+    }
+    if json_output || !io::stdin().is_terminal() {
+        return Err(
+            "deletion requires --yes in JSON or non-interactive mode; use --dry-run to preview"
+                .into(),
+        );
+    }
+
+    print!("{prompt} [y/N] ");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    io::stdin().read_line(&mut answer)?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 #[derive(Debug, Default)]
@@ -1092,7 +1321,6 @@ struct CliEndpointEditOptions {
     override_path: Option<String>,
     group_path: Option<Option<String>>,
     tags: Option<Vec<String>>,
-    publish: bool,
 }
 
 fn cli_edit_endpoint(
@@ -1175,11 +1403,7 @@ fn cli_edit_endpoint(
     normalize_store(&mut store);
     let endpoint = store.endpoints[endpoint_index].clone();
     save_cli_store(options, &store)?;
-    let written = if edit_options.publish {
-        publish(&store)?
-    } else {
-        vec![]
-    };
+    let written = apply_store(&store)?;
 
     if options.json {
         println!(
@@ -1187,7 +1411,7 @@ fn cli_edit_endpoint(
             serde_json::to_string_pretty(&json!({
                 "endpoint": endpoint,
                 "changed": changed,
-                "published": edit_options.publish,
+                "applied": true,
                 "written": written,
             }))?
         );
@@ -1197,9 +1421,7 @@ fn cli_edit_endpoint(
             endpoint.name,
             changed.join(", ")
         );
-        if edit_options.publish {
-            println!("Published {} managed override files.", written.len());
-        }
+        println!("Applied {} managed override files.", written.len());
     }
     Ok(())
 }
@@ -1214,7 +1436,6 @@ fn parse_endpoint_edit_args(
 
     while index < args.len() {
         match args[index].as_str() {
-            "--publish" => options.publish = true,
             "--name" | "--title" | "-n" => {
                 options.name = Some(take_cli_value(args, &mut index, "--name")?);
             }
@@ -1309,7 +1530,6 @@ struct CliCaseEditOptions {
     body: Option<String>,
     status: Option<i32>,
     headers: Option<String>,
-    publish: bool,
     activate: bool,
     no_activate: bool,
 }
@@ -1355,11 +1575,7 @@ fn cli_case_add(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std
     let endpoint_name = endpoint.name.clone();
     normalize_store(&mut store);
     save_cli_store(options, &store)?;
-    let written = if case_options.publish {
-        publish(&store)?
-    } else {
-        vec![]
-    };
+    let written = apply_store(&store)?;
 
     if options.json {
         println!(
@@ -1368,15 +1584,13 @@ fn cli_case_add(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std
                 "endpoint": endpoint_name,
                 "case": mock_case,
                 "active": !case_options.no_activate,
-                "published": case_options.publish,
+                "applied": true,
                 "written": written,
             }))?
         );
     } else {
         println!("Added case `{case_name}` for `{endpoint_name}`.");
-        if case_options.publish {
-            println!("Published {} managed override files.", written.len());
-        }
+        println!("Applied {} managed override files.", written.len());
     }
     Ok(())
 }
@@ -1448,11 +1662,7 @@ fn cli_case_update(
     let mock_case = endpoint.cases[case_index].clone();
     normalize_store(&mut store);
     save_cli_store(options, &store)?;
-    let written = if case_options.publish {
-        publish(&store)?
-    } else {
-        vec![]
-    };
+    let written = apply_store(&store)?;
 
     if options.json {
         println!(
@@ -1461,7 +1671,7 @@ fn cli_case_update(
                 "endpoint": endpoint_name,
                 "case": mock_case,
                 "changed": changed,
-                "published": case_options.publish,
+                "applied": true,
                 "written": written,
             }))?
         );
@@ -1472,9 +1682,7 @@ fn cli_case_update(
             endpoint_name,
             changed.join(", ")
         );
-        if case_options.publish {
-            println!("Published {} managed override files.", written.len());
-        }
+        println!("Applied {} managed override files.", written.len());
     }
     Ok(())
 }
@@ -1483,11 +1691,13 @@ fn cli_case_delete(
     options: &CliOptions,
     args: &[String],
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut publish_after = false;
+    let mut confirmed = false;
+    let mut dry_run = false;
     let mut positional = vec![];
     for arg in args {
         match arg.as_str() {
-            "--publish" => publish_after = true,
+            "--yes" => confirmed = true,
+            "--dry-run" => dry_run = true,
             value if value.starts_with('-') => {
                 return Err(format!("unknown option: {value}").into())
             }
@@ -1502,23 +1712,46 @@ fn cli_case_delete(
     }
 
     let mut store = load_cli_store(options)?;
-    let endpoint = find_endpoint_mut(&mut store, &positional[0])?;
+    let endpoint_index = find_endpoint_index(&store, &positional[0])?;
+    let endpoint = &store.endpoints[endpoint_index];
     if endpoint.cases.len() <= 1 {
         return Err("each endpoint must keep at least one case".into());
     }
     let case_index = find_case_index(endpoint, &positional[1])?;
+    let endpoint_name = endpoint.name.clone();
+    let case_name = endpoint.cases[case_index].name.clone();
+    if dry_run {
+        if options.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "dryRun": true,
+                    "endpoint": endpoint_name,
+                    "case": endpoint.cases[case_index],
+                }))?
+            );
+        } else {
+            println!("Would delete case `{case_name}` from `{endpoint_name}`.");
+        }
+        return Ok(());
+    }
+    if !confirm_cli_delete(
+        &format!("Delete case `{case_name}` from `{endpoint_name}`?"),
+        confirmed,
+        options.json,
+    )? {
+        println!("Delete cancelled.");
+        return Ok(());
+    }
+
+    let endpoint = &mut store.endpoints[endpoint_index];
     let removed_case = endpoint.cases.remove(case_index);
     if endpoint.active_case_id.as_deref() == Some(removed_case.id.as_str()) {
         endpoint.active_case_id = endpoint.cases.first().map(|mock_case| mock_case.id.clone());
     }
-    let endpoint_name = endpoint.name.clone();
     normalize_store(&mut store);
     save_cli_store(options, &store)?;
-    let written = if publish_after {
-        publish(&store)?
-    } else {
-        vec![]
-    };
+    let written = apply_store(&store)?;
 
     if options.json {
         println!(
@@ -1526,7 +1759,7 @@ fn cli_case_delete(
             serde_json::to_string_pretty(&json!({
                 "endpoint": endpoint_name,
                 "deletedCase": removed_case,
-                "published": publish_after,
+                "applied": true,
                 "written": written,
             }))?
         );
@@ -1535,9 +1768,7 @@ fn cli_case_delete(
             "Deleted case `{}` from `{endpoint_name}`.",
             removed_case.name
         );
-        if publish_after {
-            println!("Published {} managed override files.", written.len());
-        }
+        println!("Applied {} managed override files.", written.len());
     }
     Ok(())
 }
@@ -1551,7 +1782,6 @@ fn parse_case_edit_args(
 
     while index < args.len() {
         match args[index].as_str() {
-            "--publish" => options.publish = true,
             "--activate" => options.activate = true,
             "--no-activate" => options.no_activate = true,
             "--name" | "-n" => {
@@ -1646,7 +1876,7 @@ fn cli_import_curl(
     let mut store = load_cli_store(options)?;
     let (endpoint_id, case_id) = import_curl(&mut store, &curl, fetch_response)?;
     save_cli_store(options, &store)?;
-    let written = publish(&store)?;
+    let written = apply_store(&store)?;
     if options.json {
         println!(
             "{}",
@@ -1658,19 +1888,18 @@ fn cli_import_curl(
         );
     } else {
         println!("Imported cURL into endpoint {endpoint_id}, case {case_id}.");
-        println!("Published {} managed override files.", written.len());
+        println!("Applied {} managed override files.", written.len());
     }
     Ok(())
 }
 
 fn cli_use_case(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let publish_after = args.iter().any(|arg| arg == "--publish");
-    let positional = args
-        .iter()
-        .filter(|arg| arg.as_str() != "--publish")
-        .collect::<Vec<_>>();
+    let positional = args.iter().collect::<Vec<_>>();
     if positional.len() < 2 {
         return Err("use requires <endpoint> and <case>".into());
+    }
+    if positional.len() > 2 {
+        return Err("use accepts exactly <endpoint> and <case>".into());
     }
     let endpoint_query = positional[0].as_str();
     let case_query = positional[1].as_str();
@@ -1681,11 +1910,7 @@ fn cli_use_case(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std
     let case_name = find_case(endpoint, &case_id)?.name.clone();
     endpoint.active_case_id = Some(case_id.clone());
     save_cli_store(options, &store)?;
-    let written = if publish_after {
-        publish(&store)?
-    } else {
-        vec![]
-    };
+    let written = apply_store(&store)?;
 
     if options.json {
         println!(
@@ -1693,15 +1918,13 @@ fn cli_use_case(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std
             serde_json::to_string_pretty(&json!({
                 "endpoint": endpoint_name,
                 "activeCase": case_name,
-                "published": publish_after,
+                "applied": true,
                 "written": written,
             }))?
         );
     } else {
         println!("Activated case `{case_name}` for `{endpoint_name}`.");
-        if publish_after {
-            println!("Published {} managed override files.", written.len());
-        }
+        println!("Applied {} managed override files.", written.len());
     }
     Ok(())
 }
@@ -1720,6 +1943,7 @@ fn short_id(id: &str) -> &str {
 
 #[derive(Debug)]
 enum CliEndpointSelector {
+    All,
     Endpoint(String),
     Group(String),
     Matching(String),
@@ -1732,6 +1956,7 @@ fn matching_endpoint_indices(
     let mut indices = vec![];
     for selector in selectors {
         match selector {
+            CliEndpointSelector::All => indices.extend(0..store.endpoints.len()),
             CliEndpointSelector::Endpoint(query) => {
                 indices.push(find_endpoint_index(store, query)?);
             }
@@ -2040,7 +2265,21 @@ fn read_store(path: &Path) -> Result<Option<Store>, Box<dyn std::error::Error>> 
 fn write_store(path: &Path, store: &Store) -> Result<(), Box<dyn std::error::Error>> {
     ensure_parent_dir(path)?;
     let data = serde_json::to_vec_pretty(store)?;
-    fs::write(path, data)?;
+    write_atomic(path, &data)
+}
+
+fn write_atomic(path: &Path, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+    ensure_parent_dir(path)?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("mockkit-data");
+    let temporary_path = path.with_file_name(format!(".{file_name}.{}.tmp", new_id()));
+    fs::write(&temporary_path, data)?;
+    if let Err(error) = fs::rename(&temporary_path, path) {
+        let _ = fs::remove_file(&temporary_path);
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -2145,17 +2384,18 @@ fn sync_overrides(store: &mut Store) -> Result<(Vec<String>, usize), Box<dyn std
     Ok((imported, updated))
 }
 
-fn publish(store: &Store) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+fn apply_store(store: &Store) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let root = PathBuf::from(&store.overrides_folder);
     fs::create_dir_all(&root)?;
-    remove_managed_files(&root)?;
 
     if !store.mock_enabled {
+        remove_managed_files(&root)?;
         write_manifest(&root, &[])?;
         return Ok(vec![]);
     }
 
-    let mut written = vec![];
+    let previous_files = read_manifest_paths(&root)?;
+    let mut desired_files = vec![];
     for endpoint in &store.endpoints {
         if endpoint.enabled == Some(false) {
             continue;
@@ -2179,11 +2419,36 @@ fn publish(store: &Store) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         if clean_path.is_empty() {
             continue;
         }
-        let target = root.join(&clean_path);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
+        desired_files.push((clean_path, selected_case.body.as_bytes()));
+    }
+
+    let desired_paths = desired_files
+        .iter()
+        .map(|(path, _)| path.as_str())
+        .collect::<HashSet<_>>();
+    for clean_path in previous_files {
+        if desired_paths.contains(clean_path.as_str()) {
+            continue;
         }
-        fs::write(&target, &selected_case.body)?;
+        let target = root.join(&clean_path);
+        if target.exists() {
+            fs::remove_file(&target)?;
+        }
+        if let Some(parent) = target.parent() {
+            prune_empty_directories(parent, &root);
+        }
+    }
+    drop(desired_paths);
+
+    let mut written = vec![];
+    for (clean_path, body) in desired_files {
+        let target = root.join(&clean_path);
+        let unchanged = fs::read(&target)
+            .map(|current| current == body)
+            .unwrap_or(false);
+        if !unchanged {
+            write_atomic(&target, body)?;
+        }
         written.push(clean_path);
     }
 
@@ -4208,7 +4473,7 @@ fn remove_managed_files(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let data = fs::read(&manifest_path)?;
-    let manifest: PublishManifest = serde_json::from_slice(&data)?;
+    let manifest: ManagedFilesManifest = serde_json::from_slice(&data)?;
     for relative_path in manifest.managed_files {
         let clean_path = sanitized_relative_path(&relative_path);
         if clean_path.is_empty() {
@@ -4225,15 +4490,29 @@ fn remove_managed_files(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn read_manifest_paths(root: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    let manifest_path = root.join(MANIFEST_NAME);
+    if !manifest_path.exists() {
+        return Ok(vec![]);
+    }
+    let data = fs::read(manifest_path)?;
+    let manifest: ManagedFilesManifest = serde_json::from_slice(&data)?;
+    Ok(manifest
+        .managed_files
+        .into_iter()
+        .map(|path| sanitized_relative_path(&path))
+        .filter(|path| !path.is_empty())
+        .collect())
+}
+
 fn write_manifest(root: &Path, managed_files: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let manifest = PublishManifest {
+    let manifest = ManagedFilesManifest {
         managed_files: managed_files.to_vec(),
     };
-    fs::write(
-        root.join(MANIFEST_NAME),
-        serde_json::to_vec_pretty(&manifest)?,
-    )?;
-    Ok(())
+    write_atomic(
+        &root.join(MANIFEST_NAME),
+        &serde_json::to_vec_pretty(&manifest)?,
+    )
 }
 
 fn prune_empty_directories(start: &Path, root: &Path) {
@@ -4524,6 +4803,44 @@ fn new_id() -> String {
 mod tests {
     use super::*;
 
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let path = env::temp_dir().join(format!("mockkit-test-{}", new_id()));
+            fs::create_dir_all(&path).expect("test directory should be created");
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_endpoint(id: &str, path: &str, body: &str) -> Endpoint {
+        let case_id = format!("{id}-case");
+        Endpoint {
+            id: id.to_string(),
+            name: id.to_string(),
+            method: "GET".to_string(),
+            override_path: path.to_string(),
+            group_path: None,
+            description: String::new(),
+            tags: vec![],
+            enabled: Some(true),
+            active_case_id: Some(case_id.clone()),
+            cases: vec![MockCase {
+                id: case_id,
+                name: "Default".to_string(),
+                body: body.to_string(),
+                status: 200,
+                headers: String::new(),
+            }],
+        }
+    }
+
     #[test]
     fn parse_curl_preserves_cookie_option() {
         let parsed = parse_curl(
@@ -4740,5 +5057,69 @@ mod tests {
             .expect("tag should match"),
             vec![1]
         );
+        assert_eq!(
+            matching_endpoint_indices(&store, &[CliEndpointSelector::All])
+                .expect("all endpoints should match"),
+            vec![0, 1]
+        );
+    }
+
+    #[test]
+    fn apply_store_reconciles_managed_files_and_preserves_unmanaged_files() {
+        let directory = TestDirectory::new();
+        let overrides = directory.0.join("Overrides");
+        let mut store = default_store(&overrides.to_string_lossy());
+        store.endpoints = vec![test_endpoint("users", "example.com/api/users", "first")];
+
+        apply_store(&store).expect("initial apply should succeed");
+        let unmanaged = overrides.join("keep.txt");
+        fs::write(&unmanaged, "keep").expect("unmanaged file should be created");
+
+        store.endpoints = vec![test_endpoint("orders", "example.com/api/orders", "second")];
+        apply_store(&store).expect("second apply should reconcile files");
+
+        assert!(!overrides.join("example.com/api/users").exists());
+        assert_eq!(
+            fs::read_to_string(overrides.join("example.com/api/orders"))
+                .expect("new override should exist"),
+            "second"
+        );
+        assert_eq!(
+            fs::read_to_string(unmanaged).expect("unmanaged file should remain"),
+            "keep"
+        );
+    }
+
+    #[test]
+    fn cli_overrides_flag_is_not_persisted_to_the_store() {
+        let directory = TestDirectory::new();
+        let store_path = directory.0.join("store.json");
+        let persisted_overrides = directory.0.join("PersistedOverrides");
+        let temporary_overrides = directory.0.join("TemporaryOverrides");
+        let persisted_store = default_store(&persisted_overrides.to_string_lossy());
+        write_store(&store_path, &persisted_store).expect("store should be written");
+
+        let options = CliOptions {
+            store_path: store_path.clone(),
+            overrides_folder: Some(temporary_overrides.to_string_lossy().to_string()),
+            migrate_legacy: false,
+            json: false,
+        };
+        let mut effective_store = load_cli_store(&options).expect("store should load");
+        assert_eq!(
+            effective_store.overrides_folder,
+            temporary_overrides.to_string_lossy()
+        );
+        effective_store.mock_enabled = false;
+        save_cli_store(&options, &effective_store).expect("store should save");
+
+        let reloaded = read_store(&store_path)
+            .expect("store should be readable")
+            .expect("store should exist");
+        assert_eq!(
+            reloaded.overrides_folder,
+            persisted_overrides.to_string_lossy()
+        );
+        assert!(!reloaded.mock_enabled);
     }
 }

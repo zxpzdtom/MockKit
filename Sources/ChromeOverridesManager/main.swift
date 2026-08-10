@@ -401,8 +401,8 @@ final class RustCoreClient {
         try run(CoreRequest(command: "sync", storePath: storePath.path, defaultOverridesFolder: nil, legacyStorePaths: nil, store: store))
     }
 
-    func publish(store: Store, storePath: URL) throws -> CoreResponse {
-        try run(CoreRequest(command: "publish", storePath: storePath.path, defaultOverridesFolder: nil, legacyStorePaths: nil, store: store))
+    func apply(store: Store, storePath: URL) throws -> CoreResponse {
+        try run(CoreRequest(command: "apply", storePath: storePath.path, defaultOverridesFolder: nil, legacyStorePaths: nil, store: store))
     }
 
     func disable(store: Store, storePath: URL) throws -> CoreResponse {
@@ -611,6 +611,10 @@ final class StoreController {
         }
     }
 
+    func storeModificationDate() -> Date? {
+        try? storeURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }
+
     func refreshChromeProfile(store: inout Store) throws {
         let result = try core.refreshChromeProfile(store: store, storePath: storeURL)
         if let nextStore = result.store {
@@ -641,8 +645,8 @@ final class StoreController {
         return (result.imported, result.updated)
     }
 
-    func publish(store: Store) throws -> [String] {
-        let result = try core.publish(store: store, storePath: storeURL)
+    func apply(store: Store) throws -> [String] {
+        let result = try core.apply(store: store, storePath: storeURL)
         return result.written
     }
 
@@ -762,6 +766,7 @@ final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSession
     private let aiQueue = DispatchQueue(label: "mockkit.ai.generate", qos: .userInitiated)
     private weak var webView: WKWebView?
     private var store: Store
+    private var lastKnownStoreModificationDate: Date?
     private var isSavingStore = false
     private var pendingStorePayload: Any?
     private var aiGroupingCancellation: CancellationToken?
@@ -780,6 +785,7 @@ final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSession
 
     override init() {
         store = storeController.load()
+        lastKnownStoreModificationDate = storeController.storeModificationDate()
         super.init()
     }
 
@@ -813,21 +819,27 @@ final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSession
                 var nextStore = store
                 let result = try storeController.syncOverrides(store: &nextStore)
                 store = nextStore
+                lastKnownStoreModificationDate = storeController.storeModificationDate()
                 sendResult(message: "已同步：新增 \(result.imported.count) 个，更新 \(result.updated) 个。")
             case "syncFiles":
-                var nextStore = store
+                let currentModificationDate = storeController.storeModificationDate()
+                let changedOutsideApp = currentModificationDate != nil
+                    && currentModificationDate != lastKnownStoreModificationDate
+                var nextStore = changedOutsideApp ? storeController.load() : store
                 let result = try storeController.syncOverrides(store: &nextStore)
                 store = nextStore
-                if !result.imported.isEmpty || result.updated > 0 {
+                lastKnownStoreModificationDate = storeController.storeModificationDate()
+                if changedOutsideApp || !result.imported.isEmpty || result.updated > 0 {
                     sendState()
                 }
-            case "publish":
-                let written = try storeController.publish(store: store)
-                sendResult(message: "已发布 \(written.count) 个托管 Override 文件。")
+            case "apply":
+                let written = try storeController.apply(store: store)
+                sendResult(message: "已应用 \(written.count) 个托管 Override 文件。")
             case "disable":
                 var nextStore = store
                 try storeController.disable(store: &nextStore)
                 store = nextStore
+                lastKnownStoreModificationDate = storeController.storeModificationDate()
                 sendResult(message: "Mock 已禁用，托管文件已移除。")
             case "revealFolder":
                 storeController.revealOverridesFolder(store: store, relativePath: payload["path"] as? String)
@@ -843,6 +855,7 @@ final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSession
                 var nextStore = store
                 try storeController.refreshChromeProfile(store: &nextStore)
                 store = nextStore
+                lastKnownStoreModificationDate = storeController.storeModificationDate()
                 sendResult(message: "已重新检测 Chrome Profile。")
             case "importCurl":
                 let curl = payload["curl"] as? String ?? ""
@@ -1486,6 +1499,7 @@ final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSession
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     self.store = nextStore
+                    self.lastKnownStoreModificationDate = self.storeController.storeModificationDate()
                     let suffix = fetchResponse ? "，已保存响应场景。" : "。"
                     self.sendState(
                         message: "已导入 cURL\(suffix)",
@@ -1546,8 +1560,9 @@ final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSession
             }
             nextStore.aiSettings?.enabled = requestedAiEnabled
         }
-        _ = try storeController.publish(store: nextStore)
+        _ = try storeController.apply(store: nextStore)
         store = nextStore
+        lastKnownStoreModificationDate = storeController.storeModificationDate()
         if previousLanguage != store.uiSettings?.language {
             NotificationCenter.default.post(name: menuLanguageDidChangeNotification, object: nil)
         }
@@ -1743,6 +1758,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
         )
         quitItem.target = NSApp
         appMenu.insertItem(.separator(), at: 0)
+        let showAllItem = appMenu.insertItem(
+            withTitle: usesEnglish ? "Show All" : "显示全部",
+            action: #selector(NSApplication.unhideAllApplications(_:)),
+            keyEquivalent: "",
+            at: 0
+        )
+        showAllItem.target = NSApp
+        let hideOthersItem = appMenu.insertItem(
+            withTitle: usesEnglish ? "Hide Others" : "隐藏其他",
+            action: #selector(NSApplication.hideOtherApplications(_:)),
+            keyEquivalent: "h",
+            at: 0
+        )
+        hideOthersItem.target = NSApp
+        hideOthersItem.keyEquivalentModifierMask = [.command, .option]
+        let hideItem = appMenu.insertItem(
+            withTitle: usesEnglish ? "Hide \(appDisplayName)" : "隐藏 \(appDisplayName)",
+            action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h",
+            at: 0
+        )
+        hideItem.target = NSApp
+        appMenu.insertItem(.separator(), at: 0)
         let settingsItem = appMenu.insertItem(
             withTitle: usesEnglish ? "Settings" : "设置",
             action: #selector(openSettings(_:)),
@@ -1805,6 +1843,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
             if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
                event.charactersIgnoringModifiers?.lowercased() == "q" {
                 NSApp.terminate(nil)
+                return nil
+            }
+            if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+               event.charactersIgnoringModifiers?.lowercased() == "h" {
+                NSApp.hide(nil)
+                return nil
+            }
+            if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .option],
+               event.charactersIgnoringModifiers?.lowercased() == "h" {
+                NSApp.hideOtherApplications(nil)
                 return nil
             }
             if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,

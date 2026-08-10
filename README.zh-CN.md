@@ -14,20 +14,20 @@
   <a href="./LICENSE">许可证</a>
 </p>
 
-MockKit 帮前端开发者把 Chrome Local Overrides 变成可管理的 Mock 工作区。它可以扫描 Overrides 文件夹、整理接口分组、为同一个接口维护多个返回场景，并把当前场景发布回 Chrome。
+MockKit 帮前端开发者把 Chrome Local Overrides 变成可管理的 Mock 工作区。它可以扫描 Overrides 文件夹、整理接口分组、为同一个接口维护多个返回场景，并把当前场景立即应用到 Chrome。
 
 MockKit 不代理流量，也不会 hook `fetch` 或 `XMLHttpRequest`。它直接管理 Chrome Overrides 文件夹里的文件。
 
 ## 亮点
 
-- **Chrome Overrides 工作区**：绑定、扫描、编辑和发布 Mock 文件。
+- **Chrome Overrides 工作区**：绑定、扫描、编辑和应用 Mock 文件。
 - **接口业务分组**：树状目录和列表视图适合管理较大的 Overrides 文件夹。
 - **多个返回场景**：同一个接口可以快速切换成功、失败、空数据等场景。
 - **cURL 导入**：从浏览器或代理工具复制 cURL 后生成接口。
 - **AI 辅助**：支持接口命名、响应生成和业务域自动分组。
 - **中文 / 英文界面**：语言偏好保存在本机配置里。
 - **主题预设**：基于 shadcn 风格 token 映射到 MockKit 界面变量。
-- **CLI 支持**：在终端脚本里扫描、导入、编辑、切换场景、发布和禁用 Mock。
+- **CLI 支持**：在终端脚本里扫描、导入、编辑、切换场景、应用和禁用 Mock。
 - **应用更新**：通过 GitHub Releases 检查更新，支持更新弹框、下载进度、跳过版本和重启安装。
 - **本地优先**：应用数据和 API Key 默认只保存在本机。
 
@@ -39,7 +39,7 @@ MockKit 会在 Overrides 文件夹里写入一个隐藏 manifest：
 .mockkit-manifest.json
 ```
 
-这个 manifest 用来记录 MockKit 管理过的文件，避免禁用或发布时误删同目录下的非托管文件。
+这个 manifest 用来记录 MockKit 管理过的文件，避免禁用或应用 Mock 时误删同目录下的非托管文件。
 
 MockKit 默认使用 App 自己的数据目录作为 Overrides 文件夹：
 
@@ -55,7 +55,7 @@ MockKit 默认使用 App 自己的数据目录作为 Overrides 文件夹：
 2. 进入 `Sources` -> `Overrides`。
 3. 选择你的 Overrides 文件夹。
 4. 允许 Chrome 访问该文件夹。
-5. 使用 MockKit 扫描、编辑和发布返回场景。
+5. 使用 MockKit 扫描、编辑和应用返回场景。
 
 Chrome Local Overrides 只有在当前页面打开 DevTools 时才会生效。
 
@@ -84,12 +84,13 @@ cargo build
 ./target/debug/mockkit status
 ./target/debug/mockkit list
 ./target/debug/mockkit show "example.com/api/users"
-./target/debug/mockkit scan
-./target/debug/mockkit publish
+./target/debug/mockkit sync
+./target/debug/mockkit apply
 ./target/debug/mockkit import-curl "curl 'https://example.com/api/users'"
-./target/debug/mockkit use "example.com/api/users" "成功" --publish
-./target/debug/mockkit disable "example.com/api/users" --publish
-./target/debug/mockkit enable --matching "users" --publish
+./target/debug/mockkit use "example.com/api/users" "成功"
+./target/debug/mockkit disable "example.com/api/users"
+./target/debug/mockkit enable --matching "users"
+./target/debug/mockkit delete --group "用户" --dry-run
 ```
 
 构建 App 后，打开 MockKit 并选择：
@@ -104,17 +105,18 @@ MockKit -> Install Command Line Tool
 mockkit status
 mockkit list
 mockkit show "example.com/api/users"
-mockkit publish
-mockkit use "example.com/api/users" "成功" --publish
+mockkit apply
+mockkit use "example.com/api/users" "成功"
 ```
 
 常用选项：
 
 ```bash
 mockkit --json status
-mockkit --store ./store.json --overrides ./overrides scan
+mockkit --store ./store.json --overrides ./overrides sync
 cat request.curl | mockkit import-curl --fetch
-cat users.json | mockkit case update "example.com/api/users" "成功" --body-stdin --publish
+cat users.json | mockkit case update "example.com/api/users" "成功" --body-stdin
+mockkit delete --matching "deprecated" --yes
 ```
 
 CLI 默认读取和 App 相同的 store：
@@ -123,7 +125,9 @@ CLI 默认读取和 App 相同的 store：
 ~/Library/Application Support/MockKit/store.json
 ```
 
-可以用 `--store`、`--overrides`、`MOCKKIT_STORE_PATH` 或 `MOCKKIT_OVERRIDES_FOLDER` 覆盖路径。
+CLI 的修改命令会立即同步到 Overrides。`mockkit apply` 只用于外部修改文件后的手动修复。
+
+可以用 `--store`、`--overrides`、`MOCKKIT_STORE_PATH` 或 `MOCKKIT_OVERRIDES_FOLDER` 覆盖路径。`--overrides` 只对当前命令生效，不会改写工作区保存的路径。
 
 ## 构建
 
@@ -182,9 +186,9 @@ assets/                           App 图标和图标源文件
 ## 当前限制
 
 - Chrome Overrides 匹配规则仍然遵循 Chrome 自己的行为。
-- 状态码和响应头会保存在 App 模型里，但第一版发布路径以响应 body 为主。
+- 状态码和响应头会保存在 App 模型里，但第一版应用路径以响应 body 为主。
 - 同 URL 不同 HTTP Method 的请求，Chrome Overrides 可能无法区分。
-- 发布场景后，页面可能需要刷新才会看到新响应。
+- 应用场景后，页面可能需要刷新才会看到新响应。
 
 ## 许可证
 

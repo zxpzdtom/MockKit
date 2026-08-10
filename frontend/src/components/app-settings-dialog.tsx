@@ -196,10 +196,28 @@ const cliCommandsZh: CliCommand[] = [
     example: 'mockkit show "example.com/api/users" "成功"',
   },
   {
-    command: "mockkit scan",
+    command: "mockkit sync",
     description: "从 Chrome Overrides 文件夹扫描现有文件并同步到 MockKit。",
     params: [],
     example: "",
+  },
+  {
+    command: "mockkit apply",
+    description: "手动按当前 Store 状态修复 Overrides；日常修改会自动生效。",
+    params: [],
+    example: "",
+  },
+  {
+    command: "mockkit delete <endpoint...> [--yes]",
+    description: "删除单个或多个接口，确认后立即清理对应的托管 Override 文件。",
+    params: [
+      { name: "<endpoint...>", description: "一个或多个短 ID、接口名称或路径片段" },
+      { name: "--group <path>", description: "删除分组及子分组中的接口" },
+      { name: "--matching <text>", description: "按名称、路径、分组或标签批量匹配" },
+      { name: "--dry-run", description: "仅预览命中结果" },
+      { name: "--yes", description: "跳过交互确认" },
+    ],
+    example: 'mockkit delete --group "订单/列表" --dry-run',
   },
   {
     command: "mockkit import-curl <curl>",
@@ -211,14 +229,13 @@ const cliCommandsZh: CliCommand[] = [
     example: "mockkit import-curl \"curl 'https://example.com/api/users'\"",
   },
   {
-    command: "mockkit use <endpoint> <case> [--publish]",
-    description: "切换某个接口当前使用的返回场景，可立即发布到 Overrides。",
+    command: "mockkit use <endpoint> <case>",
+    description: "切换某个接口当前使用的返回场景，并立即同步到 Overrides。",
     params: [
       { name: "<endpoint>", description: "list 里显示的短 ID、接口名称或路径片段" },
       { name: "<case>", description: "场景名称" },
-      { name: "--publish", description: "切换后立刻发布" },
     ],
-    example: 'mockkit use "example.com/api/users" "成功" --publish',
+    example: 'mockkit use "example.com/api/users" "成功"',
   },
   {
     command: "mockkit edit <endpoint> [options]",
@@ -227,7 +244,6 @@ const cliCommandsZh: CliCommand[] = [
       { name: "<endpoint>", description: "list 里显示的短 ID、接口名称或路径片段" },
       { name: "--name <text>", description: "设置接口标题" },
       { name: "--description <text>", description: "设置接口说明" },
-      { name: "--publish", description: "保存后立刻发布" },
     ],
     example: 'mockkit edit "example.com/api/users" --name "用户列表" --description "分页返回用户。"',
   },
@@ -239,10 +255,8 @@ const cliCommandsZh: CliCommand[] = [
       { name: "--name <text>", description: "场景名称" },
       { name: "--body-file <path>", description: "从文件读取响应 body" },
       { name: "--no-activate", description: "新增后不切换当前场景" },
-      { name: "--publish", description: "保存后立刻发布" },
     ],
-    example:
-      'mockkit case add "example.com/api/users" --name "空列表" --body-file ./empty-users.json --publish',
+    example: 'mockkit case add "example.com/api/users" --name "空列表" --body-file ./empty-users.json',
   },
   {
     command: "mockkit case update <endpoint> <case> [options]",
@@ -254,46 +268,36 @@ const cliCommandsZh: CliCommand[] = [
       { name: "--body-file <path>", description: "从文件读取响应 body" },
       { name: "--body-stdin", description: "从 stdin 读取响应 body" },
       { name: "--activate", description: "修改后切换为当前场景" },
-      { name: "--publish", description: "保存后立刻发布" },
     ],
-    example: 'mockkit case update "example.com/api/users" "成功" --body-file ./users.json --publish',
+    example: 'mockkit case update "example.com/api/users" "成功" --body-file ./users.json',
   },
   {
-    command: "mockkit case delete <endpoint> <case> [--publish]",
+    command: "mockkit case delete <endpoint> <case> [--yes]",
     description: "删除某个返回场景；每个接口至少会保留一个场景。",
     params: [
       { name: "<endpoint>", description: "list 里显示的短 ID、接口名称或路径片段" },
       { name: "<case>", description: "场景名称或 ID" },
-      { name: "--publish", description: "删除后立刻发布" },
+      { name: "--yes", description: "跳过交互确认" },
     ],
-    example: 'mockkit case delete "example.com/api/users" "失败" --publish',
+    example: 'mockkit case delete "example.com/api/users" "失败" --yes',
   },
   {
-    command: "mockkit disable <endpoint...> [--publish]",
+    command: "mockkit disable <endpoint...>",
     description: "禁用一个或多个接口；不带参数的 mockkit disable 会关闭全部 Mock。",
-    params: [
-      { name: "<endpoint...>", description: "一个或多个短 ID、接口名称或路径片段" },
-      { name: "--publish", description: "禁用后立刻发布" },
-    ],
-    example: 'mockkit disable "example.com/api/users" --publish',
+    params: [{ name: "<endpoint...>", description: "一个或多个短 ID、接口名称或路径片段" }],
+    example: 'mockkit disable "example.com/api/users"',
   },
   {
-    command: "mockkit disable --group <path> [--publish]",
+    command: "mockkit disable --group <path>",
     description: "按分组禁用接口，包含该分组下的子路径。",
-    params: [
-      { name: "--group <path>", description: "分组路径" },
-      { name: "--publish", description: "禁用后立刻发布" },
-    ],
-    example: 'mockkit disable --group "订单/列表" --publish',
+    params: [{ name: "--group <path>", description: "分组路径" }],
+    example: 'mockkit disable --group "订单/列表"',
   },
   {
-    command: "mockkit enable --matching <text> [--publish]",
+    command: "mockkit enable --matching <text>",
     description: "按名称、路径、分组或标签批量启用匹配到的接口。",
-    params: [
-      { name: "--matching <text>", description: "用于匹配接口的文本" },
-      { name: "--publish", description: "启用后立刻发布" },
-    ],
-    example: 'mockkit enable --matching "users" --publish',
+    params: [{ name: "--matching <text>", description: "用于匹配接口的文本" }],
+    example: 'mockkit enable --matching "users"',
   },
 ];
 
@@ -321,10 +325,28 @@ const cliCommandsEn: CliCommand[] = [
     example: 'mockkit show "example.com/api/users" "Success"',
   },
   {
-    command: "mockkit scan",
+    command: "mockkit sync",
     description: "Scan existing files from the Chrome Overrides folder into MockKit.",
     params: [],
     example: "",
+  },
+  {
+    command: "mockkit apply",
+    description: "Repair Overrides from the current Store; normal mutations apply automatically.",
+    params: [],
+    example: "",
+  },
+  {
+    command: "mockkit delete <endpoint...> [--yes]",
+    description: "Delete one or more endpoints and immediately remove their managed Override files.",
+    params: [
+      { name: "<endpoint...>", description: "One or more short IDs, endpoint names, or path fragments" },
+      { name: "--group <path>", description: "Delete endpoints in a group and nested groups" },
+      { name: "--matching <text>", description: "Match by name, path, group, or tag" },
+      { name: "--dry-run", description: "Preview matches without deleting" },
+      { name: "--yes", description: "Skip the interactive confirmation" },
+    ],
+    example: 'mockkit delete --group "Orders/List" --dry-run',
   },
   {
     command: "mockkit import-curl <curl>",
@@ -336,14 +358,13 @@ const cliCommandsEn: CliCommand[] = [
     example: "mockkit import-curl \"curl 'https://example.com/api/users'\"",
   },
   {
-    command: "mockkit use <endpoint> <case> [--publish]",
-    description: "Switch the active response case for an endpoint, optionally publishing immediately.",
+    command: "mockkit use <endpoint> <case>",
+    description: "Switch the active response case and apply it to Overrides immediately.",
     params: [
       { name: "<endpoint>", description: "Short ID, endpoint name, or path fragment from list" },
       { name: "<case>", description: "Case name" },
-      { name: "--publish", description: "Publish after switching" },
     ],
-    example: 'mockkit use "example.com/api/users" "Success" --publish',
+    example: 'mockkit use "example.com/api/users" "Success"',
   },
   {
     command: "mockkit edit <endpoint> [options]",
@@ -352,7 +373,6 @@ const cliCommandsEn: CliCommand[] = [
       { name: "<endpoint>", description: "Short ID, endpoint name, or path fragment from list" },
       { name: "--name <text>", description: "Set endpoint title" },
       { name: "--description <text>", description: "Set endpoint description" },
-      { name: "--publish", description: "Publish after saving" },
     ],
     example:
       'mockkit edit "example.com/api/users" --name "User list" --description "Returns paginated users."',
@@ -365,10 +385,8 @@ const cliCommandsEn: CliCommand[] = [
       { name: "--name <text>", description: "Case name" },
       { name: "--body-file <path>", description: "Read response body from a file" },
       { name: "--no-activate", description: "Do not switch to the new case" },
-      { name: "--publish", description: "Publish after saving" },
     ],
-    example:
-      'mockkit case add "example.com/api/users" --name "Empty list" --body-file ./empty-users.json --publish',
+    example: 'mockkit case add "example.com/api/users" --name "Empty list" --body-file ./empty-users.json',
   },
   {
     command: "mockkit case update <endpoint> <case> [options]",
@@ -380,46 +398,38 @@ const cliCommandsEn: CliCommand[] = [
       { name: "--body-file <path>", description: "Read response body from a file" },
       { name: "--body-stdin", description: "Read response body from stdin" },
       { name: "--activate", description: "Switch to this case after updating" },
-      { name: "--publish", description: "Publish after saving" },
     ],
-    example: 'mockkit case update "example.com/api/users" "Success" --body-file ./users.json --publish',
+    example: 'mockkit case update "example.com/api/users" "Success" --body-file ./users.json',
   },
   {
-    command: "mockkit case delete <endpoint> <case> [--publish]",
+    command: "mockkit case delete <endpoint> <case> [--yes]",
     description: "Delete a response case; each endpoint keeps at least one case.",
     params: [
       { name: "<endpoint>", description: "Short ID, endpoint name, or path fragment from list" },
       { name: "<case>", description: "Case name or ID" },
-      { name: "--publish", description: "Publish after deleting" },
+      { name: "--yes", description: "Skip the interactive confirmation" },
     ],
-    example: 'mockkit case delete "example.com/api/users" "Failure" --publish',
+    example: 'mockkit case delete "example.com/api/users" "Failure" --yes',
   },
   {
-    command: "mockkit disable <endpoint...> [--publish]",
+    command: "mockkit disable <endpoint...>",
     description: "Disable one or more endpoints; without arguments, mockkit disable turns off all mocks.",
     params: [
       { name: "<endpoint...>", description: "One or more short IDs, endpoint names, or path fragments" },
-      { name: "--publish", description: "Publish after disabling" },
     ],
-    example: 'mockkit disable "example.com/api/users" --publish',
+    example: 'mockkit disable "example.com/api/users"',
   },
   {
-    command: "mockkit disable --group <path> [--publish]",
+    command: "mockkit disable --group <path>",
     description: "Disable endpoints by group, including nested subgroups.",
-    params: [
-      { name: "--group <path>", description: "Group path" },
-      { name: "--publish", description: "Publish after disabling" },
-    ],
-    example: 'mockkit disable --group "Orders/List" --publish',
+    params: [{ name: "--group <path>", description: "Group path" }],
+    example: 'mockkit disable --group "Orders/List"',
   },
   {
-    command: "mockkit enable --matching <text> [--publish]",
+    command: "mockkit enable --matching <text>",
     description: "Enable endpoints that match by name, path, group, or tag.",
-    params: [
-      { name: "--matching <text>", description: "Text used to match endpoints" },
-      { name: "--publish", description: "Publish after enabling" },
-    ],
-    example: 'mockkit enable --matching "users" --publish',
+    params: [{ name: "--matching <text>", description: "Text used to match endpoints" }],
+    example: 'mockkit enable --matching "users"',
   },
 ];
 
@@ -435,7 +445,7 @@ const settingsCopy = {
     appearanceDescription: "主题来自 tweakcn 的 shadcn token，并映射到 MockKit 的界面变量。",
     languageTitle: "语言",
     languageDescription: "切换 MockKit 的界面语言。设置会保存在本机配置中。",
-    cliDescription: "把 MockKit 的扫描、导入、切换场景和发布能力带到终端、脚本和 CI 流程里。",
+    cliDescription: "把 MockKit 的扫描、导入、切换场景和应用能力带到终端、脚本和 CI 流程里。",
     installCliDescription: "安装后会在终端提供全局命令，默认读取和 App 相同的本机配置。",
     installCli: "一键安装 CLI",
     installLocation: "安装位置",
@@ -503,7 +513,7 @@ const settingsCopy = {
     languageTitle: "Language",
     languageDescription: "Switch MockKit's interface language. The preference is saved locally.",
     cliDescription:
-      "Bring MockKit scanning, importing, case switching, and publishing into terminals, scripts, and CI.",
+      "Bring MockKit scanning, importing, case switching, and applying into terminals, scripts, and CI.",
     installCliDescription:
       "After installation, a global terminal command reads the same local config as the app.",
     installCli: "Install CLI",
