@@ -83,11 +83,25 @@ Run commands directly from the debug binary:
 ```bash
 ./target/debug/mockkit status
 ./target/debug/mockkit list
+./target/debug/mockkit search "users" --method GET
 ./target/debug/mockkit show "example.com/api/users"
+./target/debug/mockkit group add "用户中心/账户"
+./target/debug/mockkit endpoint add "example.com/api/users" \
+  --name "用户列表" \
+  --method GET \
+  --group "用户中心/账户" \
+  --body '{"users":[]}'
+./target/debug/mockkit group rename "用户中心" "账号中心"
+./target/debug/mockkit group reorder "账号中心" --first
+./target/debug/mockkit endpoint move "example.com/api/users" --group "账号中心" --first
+./target/debug/mockkit group delete "账号中心" --dry-run
 ./target/debug/mockkit sync
 ./target/debug/mockkit apply
 ./target/debug/mockkit import-curl "curl 'https://example.com/api/users'"
 ./target/debug/mockkit use "example.com/api/users" "Success"
+./target/debug/mockkit case list "example.com/api/users"
+./target/debug/mockkit disable
+./target/debug/mockkit enable
 ./target/debug/mockkit disable "example.com/api/users"
 ./target/debug/mockkit enable --matching "users"
 ./target/debug/mockkit delete --group "Users" --dry-run
@@ -104,7 +118,10 @@ New terminal windows can then run:
 ```bash
 mockkit status
 mockkit list
+mockkit search "users" --group "用户中心" --enabled on
 mockkit show "example.com/api/users"
+mockkit group list
+mockkit endpoint list
 mockkit apply
 mockkit use "example.com/api/users" "Success"
 ```
@@ -117,7 +134,33 @@ mockkit --store ./store.json --overrides ./overrides sync
 cat request.curl | mockkit import-curl --fetch
 cat users.json | mockkit case update "example.com/api/users" "Success" --body-stdin
 mockkit delete --matching "deprecated" --yes
+mockkit endpoint delete "example.com/api/users" --yes
+mockkit group delete "用户中心" --yes
 ```
+
+Resource-oriented CRUD commands are available for endpoints and groups:
+
+```bash
+# Endpoints: create, read, update, delete
+mockkit endpoint add <path> [--name <text>] [--method <method>] [--group <path>]
+mockkit endpoint list
+mockkit endpoint show <endpoint>
+mockkit endpoint edit <endpoint> [options]
+mockkit endpoint move <endpoint> [--group <path> | --root] [--before <endpoint> | --after <endpoint> | --first | --last]
+mockkit endpoint delete <endpoint...> [--yes]
+
+# Groups: create, read, update, delete
+mockkit group add <path>
+mockkit group list
+mockkit group show <path>
+mockkit group rename <path> <new-path>
+mockkit group reorder <path> [--before <sibling> | --after <sibling> | --first | --last]
+mockkit group delete <path> [--dry-run | --yes]
+```
+
+Creating a nested group also creates its missing parent groups. Renaming or deleting a group applies recursively to descendant groups and their endpoints.
+
+`mockkit search` and `mockkit list --matching` search names, methods, paths, descriptions, groups, tags, and every response case. Add `--regex`, `--group`, `--method`, `--enabled`, or `--limit` to narrow the result. `mockkit disable` and `mockkit enable` only change the global switch and preserve individual endpoint states; `--all` changes the global switch and every endpoint.
 
 By default, the CLI reads the same store as the app:
 

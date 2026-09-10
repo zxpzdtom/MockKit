@@ -83,11 +83,19 @@ cargo build
 ```bash
 ./target/debug/mockkit status
 ./target/debug/mockkit list
+./target/debug/mockkit search "users" --method GET
 ./target/debug/mockkit show "example.com/api/users"
+./target/debug/mockkit group add "用户中心/账户"
+./target/debug/mockkit endpoint add "example.com/api/users" --name "用户列表" --group "用户中心/账户"
+./target/debug/mockkit group reorder "用户中心" --first
+./target/debug/mockkit endpoint move "example.com/api/users" --group "用户中心/账户" --first
 ./target/debug/mockkit sync
 ./target/debug/mockkit apply
 ./target/debug/mockkit import-curl "curl 'https://example.com/api/users'"
 ./target/debug/mockkit use "example.com/api/users" "成功"
+./target/debug/mockkit case list "example.com/api/users"
+./target/debug/mockkit disable
+./target/debug/mockkit enable
 ./target/debug/mockkit disable "example.com/api/users"
 ./target/debug/mockkit enable --matching "users"
 ./target/debug/mockkit delete --group "用户" --dry-run
@@ -104,6 +112,7 @@ MockKit -> Install Command Line Tool
 ```bash
 mockkit status
 mockkit list
+mockkit search "users" --group "用户中心" --enabled on
 mockkit show "example.com/api/users"
 mockkit apply
 mockkit use "example.com/api/users" "成功"
@@ -118,6 +127,26 @@ cat request.curl | mockkit import-curl --fetch
 cat users.json | mockkit case update "example.com/api/users" "成功" --body-stdin
 mockkit delete --matching "deprecated" --yes
 ```
+
+接口与目录提供资源式 CRUD 命令，并支持排序：
+
+```bash
+mockkit endpoint add <path> [options]
+mockkit endpoint list [filters]
+mockkit endpoint show <endpoint>
+mockkit endpoint edit <endpoint> [options]
+mockkit endpoint move <endpoint> [--group <path> | --root] [--before <endpoint> | --after <endpoint> | --first | --last]
+mockkit endpoint delete <endpoint...> [--yes]
+
+mockkit group add <path>
+mockkit group list
+mockkit group show <path>
+mockkit group rename <path> <new-path>
+mockkit group reorder <path> [--before <sibling> | --after <sibling> | --first | --last]
+mockkit group delete <path> [--dry-run | --yes]
+```
+
+`mockkit search` 和 `mockkit list --matching` 会搜索名称、方法、路径、说明、分组、标签和所有返回场景。可以用 `--regex`、`--group`、`--method`、`--enabled`、`--limit` 继续过滤。`mockkit disable` 与 `mockkit enable` 只切换全局开关并保留单接口状态；`--all` 才会同时修改所有接口。
 
 CLI 默认读取和 App 相同的 store：
 

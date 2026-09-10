@@ -9,6 +9,11 @@ FRONTEND_PID=""
 
 cd "$ROOT"
 
+# The Swift bridge launches target/debug/mockkit-core directly in development,
+# and local CLI checks use target/debug/mockkit. Build both so neither surface
+# can silently run a stale executable after Rust changes.
+cargo build --bins
+
 run_frontend() {
   case "${npm_config_user_agent:-}" in
     pnpm/*)

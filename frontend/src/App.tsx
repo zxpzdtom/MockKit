@@ -1,10 +1,10 @@
-import { AiGroupingDialog } from "@/components/ai-grouping-dialog";
+import { AiGroupingDialog, type AiGroupingPlan } from "@/components/ai-grouping-dialog";
 import { AiGroupingScopeDialog } from "@/components/ai-grouping-scope-dialog";
 import { AppSettingsDialog } from "@/components/app-settings-dialog";
 import { AppSidebar } from "@/components/app-sidebar";
 import { CreateGroupDialog } from "@/components/create-group-dialog";
 import { DeleteConfirmDialog, type DeleteDialogTarget } from "@/components/delete-confirm-dialog";
-import { EndpointListPanel } from "@/components/endpoint-list-panel";
+import { type EndpointDropPlacement, EndpointListPanel } from "@/components/endpoint-list-panel";
 import { ImportCurlDialog } from "@/components/import-curl-dialog";
 import { MainToolbar } from "@/components/main-toolbar";
 import ResponseBodyEditor from "@/components/response-body-editor";
@@ -54,6 +54,7 @@ import {
 } from "lucide-react";
 import type {
   CSSProperties,
+  DragEvent as ReactDragEvent,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
   ReactNode,
@@ -406,9 +407,7 @@ function parseApiKeys(apiKeyText: string) {
 }
 
 function normalizeGroupPaths(paths: string[]) {
-  return [...new Set(paths.map(cleanGroupPath).filter(Boolean))].sort((left, right) =>
-    left.localeCompare(right),
-  );
+  return [...new Set(paths.map(cleanGroupPath).filter(Boolean))];
 }
 
 function caseFile(endpoint: Endpoint | null, mockCase: MockCase | null): CodePreviewFile {
@@ -455,6 +454,13 @@ interface TreeNode {
 }
 
 type DirectoryViewMode = "tree" | "flat";
+
+type TreeDragItem = { type: "directory"; path: string } | { type: "endpoint"; endpointId: string };
+
+interface TreeEndpointDropTarget {
+  endpointId: string;
+  placement: EndpointDropPlacement;
+}
 
 interface CompactTreeNode extends TreeNode {
   children: CompactTreeNode[];
@@ -591,15 +597,13 @@ function buildDirectoryTree(
     });
   }
 
-  const sortChildren = (node: TreeNode) => {
-    node.children.sort((left, right) => {
-      if (left.type !== right.type) return left.type === "directory" ? -1 : 1;
-      if (left.custom !== right.custom) return left.custom ? -1 : 1;
-      return left.label.localeCompare(right.label);
-    });
-    for (const child of node.children) sortChildren(child);
+  const arrangeChildren = (node: TreeNode) => {
+    const directories = node.children.filter((child) => child.type === "directory");
+    const files = node.children.filter((child) => child.type === "file");
+    node.children = [...directories, ...files];
+    for (const child of node.children) arrangeChildren(child);
   };
-  sortChildren(root);
+  arrangeChildren(root);
 
   return root;
 }
@@ -728,6 +732,20 @@ function endpointTreeNodeKey(endpointId?: string) {
   return endpointId ? `file:${endpointId}` : "";
 }
 
+function isNoopEndpointDrop(
+  endpointIds: string[],
+  sourceEndpointId: string,
+  targetEndpointId: string,
+  placement: EndpointDropPlacement,
+) {
+  const sourceIndex = endpointIds.indexOf(sourceEndpointId);
+  const originalTargetIndex = endpointIds.indexOf(targetEndpointId);
+  if (sourceIndex === -1 || originalTargetIndex === -1) return true;
+  const targetIndex = originalTargetIndex - (sourceIndex < originalTargetIndex ? 1 : 0);
+  const insertionIndex = targetIndex + (placement === "after" ? 1 : 0);
+  return insertionIndex === sourceIndex;
+}
+
 function treeNodeDomId(key: string) {
   return `tree-node-${key || "directory:"}`;
 }
@@ -836,6 +854,8 @@ export function App() {
     persistedUiState.directoryViewMode,
   );
   const [dragOverDirectory, setDragOverDirectory] = useState<string | null>(null);
+  const [treeEndpointDropTarget, setTreeEndpointDropTarget] = useState<TreeEndpointDropTarget | null>(null);
+  const [treeDragItem, setTreeDragItem] = useState<TreeDragItem | null>(null);
   const [query, setQuery] = useState("");
   const [searchRegexEnabled, setSearchRegexEnabled] = useState(false);
   const [expandedDirectories, setExpandedDirectories] = useState(
@@ -1171,9 +1191,7 @@ export function App() {
       const next = new Set([...current].filter((path) => visiblePaths.has(path)));
       return next.size === current.size ? current : next;
     });
-    setSelectionAnchorDirectoryPath((current) =>
-      current && visiblePaths.has(current) ? current : null,
-    );
+    setSelectionAnchorDirectoryPath((current) => (current && visiblePaths.has(current) ? current : null));
   }, [selectableDirectoryPaths]);
 
   useEffect(() => {
@@ -1205,6 +1223,20 @@ export function App() {
 
   useEffect(() => {
     if (!store || !availableDirectoryPaths.has(selectedDirectory)) return;
+    const selectedEndpoint = endpoints.find((item) => item.id === selectedEndpointId);
+    if (selectedEndpoint && !isEndpointInDirectory(selectedEndpoint, selectedDirectory)) {
+      const nextDirectory = getEndpointDirectoryPath(selectedEndpoint);
+      setSelectedDirectory(nextDirectory);
+      setSelectedDirectoryPaths(nextDirectory ? new Set([nextDirectory]) : new Set());
+      setSelectionAnchorDirectoryPath(nextDirectory || null);
+      setFocusedTreeNodeId(endpointTreeNodeKey(selectedEndpoint.id));
+      setExpandedDirectories((current) => {
+        const next = new Set(current);
+        for (const path of ancestorDirectoryPaths(nextDirectory)) next.add(path);
+        return next;
+      });
+      return;
+    }
     if (directoryEndpoints.length === 0) {
       setSelectedEndpointId(null);
       setSelectedCaseId(null);
@@ -1215,7 +1247,7 @@ export function App() {
     const nextEndpoint = directoryEndpoints[0];
     setSelectedEndpointId(nextEndpoint.id);
     setSelectedCaseId(activeCase(nextEndpoint)?.id ?? null);
-  }, [availableDirectoryPaths, directoryEndpoints, selectedDirectory, selectedEndpointId, store]);
+  }, [availableDirectoryPaths, directoryEndpoints, endpoints, selectedDirectory, selectedEndpointId, store]);
 
   useEffect(() => {
     const nextBody = mockCase?.body ?? "";
@@ -1286,10 +1318,7 @@ export function App() {
     setSelectedDirectoryPaths((current) => new Set(additive ? [...current, ...range] : range));
   };
 
-  const handleDirectorySelectionGesture = (
-    path: string,
-    event: ReactMouseEvent<HTMLButtonElement>,
-  ) => {
+  const handleDirectorySelectionGesture = (path: string, event: ReactMouseEvent<HTMLButtonElement>) => {
     if (!path) {
       selectDirectory("");
       return;
@@ -1501,6 +1530,71 @@ export function App() {
     setSelectionAnchorDirectoryPath(nextSelectedDirectory || null);
   };
 
+  const moveEndpointToDirectory = (endpointId: string, targetPath: string) => {
+    mutateStore((draft) => {
+      const sourceIndex = draft.endpoints.findIndex((item) => item.id === endpointId);
+      if (sourceIndex === -1) return;
+      const currentDirectory = getEndpointDirectoryPath(draft.endpoints[sourceIndex]);
+      if (currentDirectory === targetPath) return;
+
+      const [movedEndpoint] = draft.endpoints.splice(sourceIndex, 1);
+      movedEndpoint.groupPath = targetPath || null;
+      const resolvedTargetPath = getEndpointDirectoryPath(movedEndpoint);
+      let insertionIndex = -1;
+      for (let index = draft.endpoints.length - 1; index >= 0; index -= 1) {
+        if (getEndpointDirectoryPath(draft.endpoints[index]) === resolvedTargetPath) {
+          insertionIndex = index + 1;
+          break;
+        }
+      }
+      draft.endpoints.splice(
+        insertionIndex === -1 ? draft.endpoints.length : insertionIndex,
+        0,
+        movedEndpoint,
+      );
+    });
+    setExpandedDirectories((current) => {
+      const next = new Set(current);
+      next.add("");
+      for (const path of ancestorDirectoryPaths(targetPath)) next.add(path);
+      return next;
+    });
+  };
+
+  const reorderTreeEndpoint = (
+    sourceEndpointId: string,
+    targetEndpointId: string,
+    placement: EndpointDropPlacement,
+  ) => {
+    if (sourceEndpointId === targetEndpointId) return;
+    mutateStore((draft) => {
+      const sourceIndex = draft.endpoints.findIndex((item) => item.id === sourceEndpointId);
+      const targetEndpoint = draft.endpoints.find((item) => item.id === targetEndpointId);
+      if (sourceIndex === -1 || !targetEndpoint) return;
+
+      const targetDirectory = getEndpointDirectoryPath(targetEndpoint);
+      const [movedEndpoint] = draft.endpoints.splice(sourceIndex, 1);
+      movedEndpoint.groupPath = targetDirectory || null;
+      const targetIndex = draft.endpoints.findIndex((item) => item.id === targetEndpointId);
+      if (targetIndex === -1) return;
+      draft.endpoints.splice(targetIndex + (placement === "after" ? 1 : 0), 0, movedEndpoint);
+    });
+    setExpandedDirectories((current) => {
+      const targetEndpoint = storeRef.current?.endpoints.find((item) => item.id === targetEndpointId);
+      if (!targetEndpoint) return current;
+      const next = new Set(current);
+      next.add("");
+      for (const path of ancestorDirectoryPaths(getEndpointDirectoryPath(targetEndpoint))) next.add(path);
+      return next;
+    });
+  };
+
+  const finishTreeDrag = () => {
+    setTreeDragItem(null);
+    setDragOverDirectory(null);
+    setTreeEndpointDropTarget(null);
+  };
+
   const persist = useCallback((nextStore: Store) => {
     storeRef.current = nextStore;
     setStore({ ...nextStore, endpoints: [...nextStore.endpoints] });
@@ -1543,6 +1637,35 @@ export function App() {
     mutateStore((draft) => draft.endpoints.unshift(nextEndpoint));
     setSelectedEndpointId(nextEndpoint.id);
     setSelectedCaseId(defaultCaseId);
+  };
+
+  const reorderEndpoint = (
+    sourceEndpointId: string,
+    targetEndpointId: string,
+    placement: EndpointDropPlacement,
+  ) => {
+    if (sourceEndpointId === targetEndpointId) return;
+    mutateStore((draft) => {
+      const visibleEndpointIds = draft.endpoints
+        .filter((item) => isEndpointInDirectory(item, selectedDirectory))
+        .map((item) => item.id);
+      const sourceIndex = visibleEndpointIds.indexOf(sourceEndpointId);
+      if (sourceIndex === -1 || !visibleEndpointIds.includes(targetEndpointId)) return;
+
+      const [movedEndpointId] = visibleEndpointIds.splice(sourceIndex, 1);
+      const targetIndex = visibleEndpointIds.indexOf(targetEndpointId);
+      if (!movedEndpointId || targetIndex === -1) return;
+      visibleEndpointIds.splice(targetIndex + (placement === "after" ? 1 : 0), 0, movedEndpointId);
+
+      const endpointById = new Map(draft.endpoints.map((item) => [item.id, item]));
+      let visibleIndex = 0;
+      draft.endpoints = draft.endpoints.map((item) => {
+        if (!isEndpointInDirectory(item, selectedDirectory)) return item;
+        const nextId = visibleEndpointIds[visibleIndex];
+        visibleIndex += 1;
+        return endpointById.get(nextId) ?? item;
+      });
+    });
   };
 
   const toggleEndpointSelection = (endpointId: string, checked: boolean) => {
@@ -1799,9 +1922,7 @@ export function App() {
     mutateStore((draft) => {
       draft.endpoints = draft.endpoints.filter((item) => !ids.has(item.id));
       draft.groupPaths = normalizeGroupPaths(
-        (draft.groupPaths ?? []).filter(
-          (groupPath) => !paths.some((path) => isPathInside(groupPath, path)),
-        ),
+        (draft.groupPaths ?? []).filter((groupPath) => !paths.some((path) => isPathInside(groupPath, path))),
       );
       nextSelectedEndpointId =
         selectedEndpointId && !ids.has(selectedEndpointId)
@@ -1812,9 +1933,7 @@ export function App() {
     });
     setExpandedDirectories((current) => {
       const next = new Set(
-        [...current].filter(
-          (expandedPath) => !paths.some((path) => isPathInside(expandedPath, path)),
-        ),
+        [...current].filter((expandedPath) => !paths.some((path) => isPathInside(expandedPath, path))),
       );
       next.add(parentPath);
       next.add("");
@@ -2399,24 +2518,66 @@ export function App() {
     });
   };
 
-  const applyAiGroupingPreview = (assignments: Array<{ endpointId: string; groupPath: string }>) => {
+  const applyAiGroupingPreview = (plan: AiGroupingPlan) => {
     const endpointIds = new Set(endpoints.map((item) => item.id));
-    const cleanAssignments = assignments
+    const cleanAssignments = plan.assignments
       .map((item) => ({
         endpointId: item.endpointId,
         groupPath: cleanGroupPath(item.groupPath),
       }))
       .filter((item) => endpointIds.has(item.endpointId));
+    const assignmentEndpointIds = new Set(cleanAssignments.map((item) => item.endpointId));
+    const orderedEndpointIds = [
+      ...new Set(plan.endpointIds.filter((endpointId) => assignmentEndpointIds.has(endpointId))),
+    ];
+    const orderedGroupPaths = normalizeGroupPaths(plan.groupPaths);
+
+    const selectedAssignment = cleanAssignments.find(
+      (assignment) => assignment.endpointId === selectedEndpointId,
+    );
+    if (selectedAssignment) {
+      setSelectedDirectory(selectedAssignment.groupPath);
+      setSelectedDirectoryPaths(
+        selectedAssignment.groupPath ? new Set([selectedAssignment.groupPath]) : new Set(),
+      );
+      setSelectionAnchorDirectoryPath(selectedAssignment.groupPath || null);
+      setFocusedTreeNodeId(endpointTreeNodeKey(selectedAssignment.endpointId));
+    }
 
     mutateStore((draft) => {
-      const nextGroupPaths = new Set<string>();
+      const previousAssignedGroupPaths = new Set(
+        draft.endpoints
+          .filter((item) => assignmentEndpointIds.has(item.id))
+          .map((item) => cleanGroupPath(item.groupPath ?? ""))
+          .filter(Boolean),
+      );
       for (const assignment of cleanAssignments) {
         const item = draft.endpoints.find((candidate) => candidate.id === assignment.endpointId);
         if (!item) continue;
         item.groupPath = assignment.groupPath || null;
-        if (assignment.groupPath) nextGroupPaths.add(assignment.groupPath);
       }
-      draft.groupPaths = normalizeGroupPaths([...nextGroupPaths]);
+
+      const endpointById = new Map(draft.endpoints.map((item) => [item.id, item]));
+      const orderedEndpoints = orderedEndpointIds
+        .map((endpointId) => endpointById.get(endpointId))
+        .filter((item): item is Endpoint => Boolean(item));
+      let orderedIndex = 0;
+      draft.endpoints = draft.endpoints.map((item) =>
+        assignmentEndpointIds.has(item.id) ? (orderedEndpoints[orderedIndex++] ?? item) : item,
+      );
+
+      const usedGroupPaths = new Set(
+        draft.endpoints.map((item) => cleanGroupPath(item.groupPath ?? "")).filter(Boolean),
+      );
+      const preservedGroupPaths = (draft.groupPaths ?? []).filter((groupPath) => {
+        const cleanPath = cleanGroupPath(groupPath);
+        return !previousAssignedGroupPaths.has(cleanPath) || usedGroupPaths.has(cleanPath);
+      });
+      draft.groupPaths = normalizeGroupPaths([
+        ...orderedGroupPaths,
+        ...preservedGroupPaths,
+        ...usedGroupPaths,
+      ]);
     });
     setExpandedDirectories((current) => {
       const next = new Set(current);
@@ -2561,7 +2722,26 @@ export function App() {
 
   return (
     <TooltipProvider>
-      <div className="h-full w-full overflow-visible bg-[var(--bg)]">
+      <div
+        className="h-full w-full overflow-visible bg-[var(--bg)]"
+        onDragOver={(event) => {
+          if (!treeDragItem) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "move";
+        }}
+        onDrop={(event) => {
+          if (!treeDragItem) return;
+          event.preventDefault();
+          if (treeDragItem.type === "endpoint" && treeEndpointDropTarget) {
+            reorderTreeEndpoint(
+              treeDragItem.endpointId,
+              treeEndpointDropTarget.endpointId,
+              treeEndpointDropTarget.placement,
+            );
+          }
+          finishTreeDrag();
+        }}
+      >
         <ResizablePanelGroup direction="horizontal">
           <ResizablePanel
             defaultSize="252px"
@@ -2593,6 +2773,8 @@ export function App() {
                 <DirectoryNode
                   endpoints={endpoints}
                   dragOverPath={dragOverDirectory}
+                  endpointDropTarget={treeEndpointDropTarget}
+                  dragItem={treeDragItem}
                   expandedPaths={expandedDirectories}
                   messages={copy.directories}
                   node={displayedDirectoryTree}
@@ -2601,9 +2783,14 @@ export function App() {
                   selectedDirectoryPaths={selectedDirectoryPaths}
                   selectedEndpointId={selectedEndpointId}
                   onDragOverPath={setDragOverDirectory}
+                  onEndpointDropTarget={setTreeEndpointDropTarget}
+                  onDragStart={setTreeDragItem}
+                  onDragEnd={finishTreeDrag}
                   onPrepareDirectoryContextMenu={prepareDirectoryContextMenu}
                   onSelect={handleDirectorySelectionGesture}
                   onMoveDirectory={moveDirectory}
+                  onMoveEndpoint={moveEndpointToDirectory}
+                  onReorderEndpoint={reorderTreeEndpoint}
                   onRequestDeleteDirectory={requestDeleteDirectory}
                   onRequestDeleteEndpoint={requestDeleteEndpointFromTree}
                   onSetEnabled={setDirectoryEnabledByPath}
@@ -2652,11 +2839,14 @@ export function App() {
                     onAddEndpoint={addEndpoint}
                     onClearSelection={clearEndpointSelection}
                     onDeleteSelectedEndpoints={deleteSelectedEndpoints}
+                    onEndpointDragEnd={finishTreeDrag}
+                    onEndpointDragStart={(endpointId) => setTreeDragItem({ type: "endpoint", endpointId })}
                     onEndpointRowClick={handleEndpointRowClick}
                     onEndpointSelectionGesture={handleEndpointSelectionGesture}
                     onPrepareEndpointContextMenu={prepareEndpointContextMenu}
                     onQueryChange={setQuery}
                     onRegexEnabledChange={setSearchRegexEnabled}
+                    onReorderEndpoint={reorderEndpoint}
                     onRequestDeleteEndpoint={requestDeleteEndpointFromList}
                     onRevealEndpointDirectory={revealEndpointDirectory}
                     onSetEndpointIdsEnabled={setEndpointIdsEnabled}
@@ -3504,9 +3694,29 @@ export function App() {
   );
 }
 
+function createTreeDragPreview(source: HTMLElement) {
+  const sourceLine = source.closest<HTMLElement>(".source-line");
+  if (!sourceLine) return null;
+  const preview = sourceLine.cloneNode(true) as HTMLElement;
+  const bounds = sourceLine.getBoundingClientRect();
+  preview.classList.add("tree-drag-preview");
+  preview.removeAttribute("data-drop-kind");
+  preview.removeAttribute("data-drop-target");
+  preview.removeAttribute("data-endpoint-drop");
+  preview.setAttribute("aria-hidden", "true");
+  preview.style.width = `${bounds.width}px`;
+  preview.style.setProperty("--tree-indent", "0px");
+  preview.querySelector(".source-row")?.classList.remove("dragging");
+  for (const element of preview.querySelectorAll("[id]")) element.removeAttribute("id");
+  document.body.appendChild(preview);
+  return preview;
+}
+
 interface DirectoryNodeProps {
   endpoints: Endpoint[];
+  dragItem: TreeDragItem | null;
   dragOverPath: string | null;
+  endpointDropTarget: TreeEndpointDropTarget | null;
   expandedPaths: Set<string>;
   focusedNodeId: string;
   messages: (typeof messages)["zh-CN"]["directories"];
@@ -3515,8 +3725,17 @@ interface DirectoryNodeProps {
   selectedDirectoryPath: string;
   selectedDirectoryPaths: Set<string>;
   selectedEndpointId: string | null;
+  onDragEnd(): void;
   onDragOverPath(path: string | null): void;
+  onEndpointDropTarget(target: TreeEndpointDropTarget | null): void;
+  onDragStart(item: TreeDragItem): void;
   onMoveDirectory(sourcePath: string, targetPath: string): void;
+  onMoveEndpoint(endpointId: string, targetPath: string): void;
+  onReorderEndpoint(
+    sourceEndpointId: string,
+    targetEndpointId: string,
+    placement: EndpointDropPlacement,
+  ): void;
   onPrepareDirectoryContextMenu(path: string): void;
   onRequestDeleteDirectory(path: string): void;
   onRequestDeleteEndpoint(item: Endpoint): void;
@@ -3529,7 +3748,9 @@ interface DirectoryNodeProps {
 
 function DirectoryNode({
   endpoints,
+  dragItem,
   dragOverPath,
+  endpointDropTarget,
   expandedPaths,
   focusedNodeId,
   messages,
@@ -3538,8 +3759,13 @@ function DirectoryNode({
   selectedDirectoryPath,
   selectedDirectoryPaths,
   selectedEndpointId,
+  onDragEnd,
   onDragOverPath,
+  onEndpointDropTarget,
+  onDragStart,
   onMoveDirectory,
+  onMoveEndpoint,
+  onReorderEndpoint,
   onPrepareDirectoryContextMenu,
   onRequestDeleteDirectory,
   onRequestDeleteEndpoint,
@@ -3549,6 +3775,7 @@ function DirectoryNode({
   onSetEndpointEnabled,
   onToggle,
 }: DirectoryNodeProps) {
+  const hoverExpandTimer = useRef<number | null>(null);
   const endpoint = node.type === "file" ? endpoints.find((item) => item.id === node.endpointId) : null;
   const childEndpoints = endpoints.filter((item) => isEndpointInDirectory(item, node.path));
   const relatedEndpoints = endpoint ? [endpoint] : childEndpoints;
@@ -3562,13 +3789,106 @@ function DirectoryNode({
     node.type === "file" ? node.endpointId === selectedEndpointId : node.path === selectedDirectoryPath;
   const selected = node.type === "directory" && Boolean(node.path) && selectedDirectoryPaths.has(node.path);
   const focused = treeNodeKey(node) === focusedNodeId;
-  const dropActive = dragOverPath === node.path;
+  const draggedEndpoint =
+    dragItem?.type === "endpoint"
+      ? (endpoints.find((item) => item.id === dragItem.endpointId) ?? null)
+      : null;
+  const canAcceptDrop =
+    node.type === "directory" &&
+    Boolean(dragItem) &&
+    (dragItem?.type === "endpoint"
+      ? draggedEndpoint !== null && getEndpointDirectoryPath(draggedEndpoint) !== node.path
+      : dragItem?.path !== node.path && !isPathInside(node.path, dragItem?.path ?? ""));
+  const dropActive = canAcceptDrop && dragOverPath === node.path;
   const currentDirectoryPath = node.path ? `${overridesFolder}/${node.path}` : overridesFolder;
   const endpointEnabled = endpoint?.enabled !== false;
 
+  const clearHoverExpandTimer = () => {
+    if (hoverExpandTimer.current === null) return;
+    window.clearTimeout(hoverExpandTimer.current);
+    hoverExpandTimer.current = null;
+  };
+
+  useEffect(
+    () => () => {
+      if (hoverExpandTimer.current !== null) window.clearTimeout(hoverExpandTimer.current);
+    },
+    [],
+  );
+
   if (node.type === "file") {
+    const activeEndpointDropTarget =
+      endpointDropTarget?.endpointId === node.endpointId ? endpointDropTarget : null;
+    const canReorderEndpoint =
+      dragItem?.type === "endpoint" && Boolean(node.endpointId) && dragItem.endpointId !== node.endpointId;
+
+    const updateEndpointDropTarget = (event: ReactDragEvent<HTMLButtonElement>) => {
+      if (dragItem?.type !== "endpoint" || !node.endpointId) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      if (!canReorderEndpoint) {
+        onEndpointDropTarget(null);
+        return;
+      }
+      const bounds = event.currentTarget.getBoundingClientRect();
+      const placement = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+      const targetDirectory = getEndpointDirectoryPath(endpoint ?? endpoints[0]);
+      const sourceEndpoint = endpoints.find((item) => item.id === dragItem.endpointId);
+      if (
+        sourceEndpoint &&
+        getEndpointDirectoryPath(sourceEndpoint) === targetDirectory &&
+        isNoopEndpointDrop(
+          endpoints
+            .filter((item) => getEndpointDirectoryPath(item) === targetDirectory)
+            .map((item) => item.id),
+          dragItem.endpointId,
+          node.endpointId,
+          placement,
+        )
+      ) {
+        onEndpointDropTarget(null);
+        return;
+      }
+      onDragOverPath(null);
+      onEndpointDropTarget({ endpointId: node.endpointId, placement });
+    };
+
+    const commitEndpointDrop = (event: ReactDragEvent<HTMLElement>) => {
+      if (!activeEndpointDropTarget || !node.endpointId) return;
+      const sourceEndpointId = event.dataTransfer.getData("application/x-mockkit-endpoint");
+      if (!sourceEndpointId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      onReorderEndpoint(sourceEndpointId, node.endpointId, activeEndpointDropTarget.placement);
+      onDragEnd();
+    };
+
+    const sortPlaceholder =
+      activeEndpointDropTarget && draggedEndpoint ? (
+        <div
+          aria-hidden="true"
+          className="source-sort-placeholder"
+          data-placement={activeEndpointDropTarget.placement}
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+          }}
+          onDrop={commitEndpointDrop}
+          style={{ "--tree-indent": `${Math.max(0, node.depth) * 14}px` } as CSSProperties}
+        />
+      ) : null;
+
+    const draggingSource = dragItem?.type === "endpoint" && dragItem.endpointId === node.endpointId;
+
     return (
-      <div className="source-node">
+      <div
+        className={cn(
+          "source-node",
+          draggingSource && "source-node-drag-source",
+          draggingSource && endpointDropTarget && "source-node-drag-source-collapsed",
+        )}
+      >
+        {activeEndpointDropTarget?.placement === "before" ? sortPlaceholder : null}
         <div
           className="source-line"
           style={{ "--tree-indent": `${Math.max(0, node.depth) * 14}px` } as CSSProperties}
@@ -3582,10 +3902,32 @@ function DirectoryNode({
                   active && "active",
                   focused && "focused",
                   !endpointEnabled && "disabled",
+                  dragItem?.type === "endpoint" && dragItem.endpointId === node.endpointId && "dragging",
                 )}
                 data-directory-path={directoryDomId(node.path)}
+                data-drag-kind="endpoint"
                 data-tree-node-id={treeNodeKey(node)}
+                draggable={Boolean(endpoint)}
                 id={treeNodeDomId(treeNodeKey(node))}
+                onDragEnd={onDragEnd}
+                onDragOver={updateEndpointDropTarget}
+                onDragEnter={updateEndpointDropTarget}
+                onDragStart={(event) => {
+                  if (!endpoint) {
+                    event.preventDefault();
+                    return;
+                  }
+                  onDragStart({ type: "endpoint", endpointId: endpoint.id });
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("application/x-mockkit-endpoint", endpoint.id);
+                  event.dataTransfer.setData("text/plain", endpoint.id);
+                  const preview = createTreeDragPreview(event.currentTarget);
+                  if (preview) {
+                    event.dataTransfer.setDragImage(preview, 22, 14);
+                    window.setTimeout(() => preview.remove(), 0);
+                  }
+                }}
+                onDrop={commitEndpointDrop}
                 onClick={() => onSelectEndpoint(node.endpointId)}
                 type="button"
               >
@@ -3637,6 +3979,7 @@ function DirectoryNode({
             size="sm"
           />
         </div>
+        {activeEndpointDropTarget?.placement === "after" ? sortPlaceholder : null}
       </div>
     );
   }
@@ -3645,6 +3988,7 @@ function DirectoryNode({
     <div className="source-node">
       <div
         className="source-line"
+        data-drop-kind={dropActive ? dragItem?.type : undefined}
         data-drop-target={dropActive ? "true" : undefined}
         style={{ "--tree-indent": `${Math.max(0, node.depth) * 14}px` } as CSSProperties}
       >
@@ -3675,22 +4019,35 @@ function DirectoryNode({
                 selected && "selected",
                 active && "active",
                 focused && "focused",
+                dragItem?.type === "directory" && dragItem.path === node.path && "dragging",
               )}
               data-directory-path={directoryDomId(node.path)}
               data-tree-node-id={treeNodeKey(node)}
               draggable={Boolean(node.path)}
               id={treeNodeDomId(treeNodeKey(node))}
               onDragOver={(event) => {
+                if (!canAcceptDrop) return;
                 event.preventDefault();
                 event.dataTransfer.dropEffect = "move";
+                onEndpointDropTarget(null);
                 onDragOverPath(node.path);
               }}
               onDragEnter={(event) => {
+                if (!canAcceptDrop) return;
                 event.preventDefault();
+                onEndpointDropTarget(null);
                 onDragOverPath(node.path);
+                clearHoverExpandTimer();
+                if (hasChildren && !expanded) {
+                  hoverExpandTimer.current = window.setTimeout(() => {
+                    onToggle(node.path);
+                    hoverExpandTimer.current = null;
+                  }, 520);
+                }
               }}
               onDragLeave={(event) => {
                 if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+                clearHoverExpandTimer();
                 onDragOverPath(null);
               }}
               onDragStart={(event) => {
@@ -3698,15 +4055,31 @@ function DirectoryNode({
                   event.preventDefault();
                   return;
                 }
+                onDragStart({ type: "directory", path: node.path });
                 event.dataTransfer.effectAllowed = "move";
                 event.dataTransfer.setData("application/x-mockkit-directory", node.path);
+                event.dataTransfer.setData("text/plain", node.path);
+                const preview = createTreeDragPreview(event.currentTarget);
+                if (preview) {
+                  event.dataTransfer.setDragImage(preview, 22, 14);
+                  window.setTimeout(() => preview.remove(), 0);
+                }
               }}
-              onDragEnd={() => onDragOverPath(null)}
+              onDragEnd={() => {
+                clearHoverExpandTimer();
+                onDragEnd();
+              }}
               onDrop={(event) => {
+                if (!canAcceptDrop) return;
                 event.preventDefault();
-                onDragOverPath(null);
+                event.stopPropagation();
+                clearHoverExpandTimer();
+                const endpointId = event.dataTransfer.getData("application/x-mockkit-endpoint");
                 const sourcePath = event.dataTransfer.getData("application/x-mockkit-directory");
-                if (sourcePath) onMoveDirectory(sourcePath, node.path);
+                if (endpointId) onMoveEndpoint(endpointId, node.path);
+                else if (sourcePath) onMoveDirectory(sourcePath, node.path);
+                if (!expanded) onToggle(node.path);
+                onDragEnd();
               }}
               onClick={(event) => onSelect(node.path, event)}
               onDoubleClick={() => {
@@ -3723,11 +4096,18 @@ function DirectoryNode({
               </span>
               <span className="source-label">{node.label}</span>
               <Badge
-                className={cn("source-count", node.custom && node.count === 0 && "empty")}
+                className={cn(
+                  "source-count",
+                  node.custom && node.count === 0 && "empty",
+                  dropActive && "drop-hidden",
+                )}
                 variant="secondary"
               >
                 {node.custom && node.count === 0 ? messages.newBadge : node.count}
               </Badge>
+              <span aria-hidden="true" className={cn("source-drop-hint", dropActive && "visible")}>
+                {dragItem?.type === "endpoint" ? messages.moveEndpointHere : messages.moveDirectoryHere}
+              </span>
             </button>
           </ContextMenuTrigger>
           <ContextMenuContent className="app-context-menu">
@@ -3769,7 +4149,9 @@ function DirectoryNode({
             {node.children.map((child) => (
               <DirectoryNode
                 endpoints={endpoints}
+                dragItem={dragItem}
                 dragOverPath={dragOverPath}
+                endpointDropTarget={endpointDropTarget}
                 expandedPaths={expandedPaths}
                 focusedNodeId={focusedNodeId}
                 messages={messages}
@@ -3779,8 +4161,13 @@ function DirectoryNode({
                 selectedDirectoryPath={selectedDirectoryPath}
                 selectedDirectoryPaths={selectedDirectoryPaths}
                 selectedEndpointId={selectedEndpointId}
+                onDragEnd={onDragEnd}
                 onDragOverPath={onDragOverPath}
+                onEndpointDropTarget={onEndpointDropTarget}
+                onDragStart={onDragStart}
                 onMoveDirectory={onMoveDirectory}
+                onMoveEndpoint={onMoveEndpoint}
+                onReorderEndpoint={onReorderEndpoint}
                 onPrepareDirectoryContextMenu={onPrepareDirectoryContextMenu}
                 onRequestDeleteDirectory={onRequestDeleteDirectory}
                 onRequestDeleteEndpoint={onRequestDeleteEndpoint}

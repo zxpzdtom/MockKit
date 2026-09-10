@@ -30,6 +30,12 @@ interface GroupingTree {
   groups: Record<string, EditableGroup>;
 }
 
+export interface AiGroupingPlan {
+  assignments: Array<{ endpointId: string; groupPath: string }>;
+  endpointIds: string[];
+  groupPaths: string[];
+}
+
 type DragItem = { type: "endpoint"; endpointId: string } | { type: "group"; groupId: string };
 
 type DropTarget =
@@ -42,7 +48,7 @@ interface AiGroupingDialogProps {
   endpoints: Endpoint[];
   messages: AppMessages["aiGrouping"];
   commonMessages: AppMessages["common"];
-  onApply(assignments: Array<{ endpointId: string; groupPath: string }>): void;
+  onApply(plan: AiGroupingPlan): void;
   onOpenChange(open: boolean): void;
   open: boolean;
   preview: AiGroupingPreview | null;
@@ -140,14 +146,24 @@ function isGroupInside(tree: GroupingTree, groupId: string, parentId: string) {
   return false;
 }
 
-function collectEndpointAssignments(tree: GroupingTree) {
+function collectGroupingPlan(tree: GroupingTree): AiGroupingPlan {
   const assignments: Array<{ endpointId: string; groupPath: string }> = [];
-  for (const group of Object.values(tree.groups)) {
+  const endpointIds: string[] = [];
+  const groupPaths: string[] = [];
+
+  const visit = (groupId: string) => {
+    const group = tree.groups[groupId];
+    if (!group) return;
+    const path = group.id === rootId ? "" : groupPath(tree, group.id);
+    if (path) groupPaths.push(path);
+    for (const childId of group.children) visit(childId);
     for (const endpointId of group.endpointIds) {
-      assignments.push({ endpointId, groupPath: group.id === rootId ? "" : groupPath(tree, group.id) });
+      assignments.push({ endpointId, groupPath: path });
+      endpointIds.push(endpointId);
     }
-  }
-  return assignments;
+  };
+  visit(rootId);
+  return { assignments, endpointIds, groupPaths };
 }
 
 function countGroupEndpoints(tree: GroupingTree, groupId: string): number {
@@ -386,6 +402,71 @@ export function AiGroupingDialog({
     );
   };
 
+  const renderEndpointNode = (endpointId: string, depth: number, ungrouped = false) => {
+    const endpoint = endpointMap.get(endpointId);
+    if (!endpoint) return null;
+    return (
+      <div className="ai-endpoint-node" key={endpointId} style={depthStyle(depth)}>
+        {renderDropPlaceholder({ type: "endpoint-before", endpointId }, depth, messages.moveEndpointHere)}
+        <div
+          className={cn(
+            "ai-endpoint-row",
+            ungrouped && "ungrouped",
+            dragItem?.type === "endpoint" && "is-drag-ready",
+            dragItem?.type === "endpoint" && dragItem.endpointId === endpointId && "dragging",
+          )}
+          draggable
+          onDragEnd={() => {
+            setDragItem(null);
+            setDropTarget(null);
+          }}
+          onDragOver={(event) => {
+            if (dragItem?.type !== "endpoint") return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            setNextDropTarget({ type: "endpoint-before", endpointId });
+          }}
+          onDragStart={(event) => {
+            event.dataTransfer.effectAllowed = "move";
+            setDragItem({ type: "endpoint", endpointId });
+            const dragPreview = createDragPreview(
+              endpoint.name,
+              `${endpoint.method} · ${endpoint.overridePath}`,
+              "endpoint",
+            );
+            event.dataTransfer.setDragImage(dragPreview, 24, 24);
+            window.setTimeout(() => dragPreview.remove(), 0);
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            applyDropTarget({ type: "endpoint-before", endpointId });
+          }}
+        >
+          <span className="ai-group-grip" aria-hidden="true">
+            <GripVertical size={13} />
+          </span>
+          <FileJson className="ai-endpoint-icon" size={14} strokeWidth={1.65} />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[13px] font-[620] text-[var(--text)]">{endpoint.name}</div>
+            <div className="truncate text-xs text-[var(--muted)]">
+              {endpoint.method} · {endpoint.overridePath}
+            </div>
+          </div>
+          {!ungrouped ? (
+            <Button
+              className="ai-endpoint-cancel"
+              type="button"
+              variant="ghost"
+              onClick={() => moveEndpointToGroup(endpointId, rootId)}
+            >
+              {messages.remove}
+            </Button>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+
   const renderGroup = (groupId: string, depth = 0) => {
     const group = tree.groups[groupId];
     if (!group) return null;
@@ -401,23 +482,7 @@ export function AiGroupingDialog({
             {group.endpointIds.length > 0 ? (
               <div className="ai-ungrouped-section">
                 <div className="ai-ungrouped-title">{messages.ungrouped}</div>
-                {group.endpointIds.map((endpointId) => {
-                  const endpoint = endpointMap.get(endpointId);
-                  if (!endpoint) return null;
-                  return (
-                    <div className="ai-endpoint-row ungrouped" key={endpointId} style={depthStyle(0)}>
-                      <FileJson className="ai-endpoint-icon" size={14} strokeWidth={1.65} />
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-[13px] font-[620] text-[var(--text)]">
-                          {endpoint.name}
-                        </div>
-                        <div className="truncate text-xs text-[var(--muted)]">
-                          {endpoint.method} · {endpoint.overridePath}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
+                {group.endpointIds.map((endpointId) => renderEndpointNode(endpointId, 0, true))}
               </div>
             ) : null}
             {dragItem ? (
@@ -563,73 +628,7 @@ export function AiGroupingDialog({
           )}
           {!isCollapsed ? group.children.map((childId) => renderGroup(childId, depth + 1)) : null}
           {!isCollapsed
-            ? group.endpointIds.map((endpointId) => {
-                const endpoint = endpointMap.get(endpointId);
-                if (!endpoint) return null;
-                return (
-                  <div className="ai-endpoint-node" key={endpointId} style={depthStyle(depth + 1)}>
-                    {renderDropPlaceholder(
-                      { type: "endpoint-before", endpointId },
-                      depth + 1,
-                      messages.moveEndpointHere,
-                    )}
-                    <div
-                      className={cn(
-                        "ai-endpoint-row",
-                        dragItem?.type === "endpoint" && "is-drag-ready",
-                        dragItem?.type === "endpoint" && dragItem.endpointId === endpointId && "dragging",
-                      )}
-                      draggable
-                      onDragEnd={() => {
-                        setDragItem(null);
-                        setDropTarget(null);
-                      }}
-                      onDragOver={(event) => {
-                        if (dragItem?.type !== "endpoint") return;
-                        event.preventDefault();
-                        event.dataTransfer.dropEffect = "move";
-                        setNextDropTarget({ type: "endpoint-before", endpointId });
-                      }}
-                      onDragStart={(event) => {
-                        event.dataTransfer.effectAllowed = "move";
-                        setDragItem({ type: "endpoint", endpointId });
-                        const preview = createDragPreview(
-                          endpoint.name,
-                          `${endpoint.method} · ${endpoint.overridePath}`,
-                          "endpoint",
-                        );
-                        event.dataTransfer.setDragImage(preview, 24, 24);
-                        window.setTimeout(() => preview.remove(), 0);
-                      }}
-                      onDrop={(event) => {
-                        event.preventDefault();
-                        applyDropTarget({ type: "endpoint-before", endpointId });
-                      }}
-                    >
-                      <span className="ai-group-grip" aria-hidden="true">
-                        <GripVertical size={13} />
-                      </span>
-                      <FileJson className="ai-endpoint-icon" size={14} strokeWidth={1.65} />
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-[13px] font-[620] text-[var(--text)]">
-                          {endpoint.name}
-                        </div>
-                        <div className="truncate text-xs text-[var(--muted)]">
-                          {endpoint.method} · {endpoint.overridePath}
-                        </div>
-                      </div>
-                      <Button
-                        className="ai-endpoint-cancel"
-                        type="button"
-                        variant="ghost"
-                        onClick={() => moveEndpointToGroup(endpointId, rootId)}
-                      >
-                        {messages.remove}
-                      </Button>
-                    </div>
-                  </div>
-                );
-              })
+            ? group.endpointIds.map((endpointId) => renderEndpointNode(endpointId, depth + 1))
             : null}
           {dragItem && !isCollapsed ? (
             <div
@@ -670,7 +669,7 @@ export function AiGroupingDialog({
           <Button variant="secondary" type="button" onClick={() => onOpenChange(false)}>
             {commonMessages.cancel}
           </Button>
-          <Button type="button" onClick={() => onApply(collectEndpointAssignments(tree))}>
+          <Button type="button" onClick={() => onApply(collectGroupingPlan(tree))}>
             {messages.apply}
           </Button>
         </DialogFooter>

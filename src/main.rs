@@ -1,8 +1,10 @@
+use fs2::FileExt;
+use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -30,6 +32,7 @@ struct CoreRequest {
     default_overrides_folder: Option<String>,
     legacy_store_paths: Option<Vec<String>>,
     store: Option<Store>,
+    expected_store: Option<Store>,
     curl: Option<String>,
     fetch_response: Option<bool>,
     ai_request: Option<AiMockRequest>,
@@ -307,11 +310,18 @@ fn should_run_cli(args: &[String]) -> bool {
             | "help"
             | "status"
             | "list"
+            | "search"
+            | "find"
             | "show"
             | "get"
+            | "endpoint"
+            | "group"
             | "scan"
             | "sync"
             | "apply"
+            | "delete"
+            | "remove"
+            | "rm"
             | "disable"
             | "enable"
             | "edit"
@@ -338,17 +348,24 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
     };
     let request: CoreRequest = serde_json::from_str(&request_text)?;
     let store_path = PathBuf::from(&request.store_path);
+    let _store_lock = core_command_needs_store_lock(&request.command)
+        .then(|| lock_store(&store_path))
+        .transpose()?;
+    ensure_expected_store_matches(&store_path, request.expected_store.as_ref())?;
 
     let response = match request.command.as_str() {
         "load" => {
             ensure_parent_dir(&store_path)?;
             migrate_legacy_store(&store_path, request.legacy_store_paths.as_deref())?;
-            let mut store = read_store(&store_path)?.unwrap_or_else(|| {
+            let existing_store = read_store(&store_path)?;
+            let mut store = existing_store.clone().unwrap_or_else(|| {
                 default_store(request.default_overrides_folder.as_deref().unwrap_or(""))
             });
             normalize_store(&mut store);
-            refresh_chrome_profile(&mut store);
-            write_store(&store_path, &store)?;
+            refresh_chrome_profile(&mut store, false);
+            if !stores_equal(existing_store.as_ref(), Some(&store))? {
+                write_store(&store_path, &store)?;
+            }
             CoreResponse {
                 store: Some(store),
                 imported: vec![],
@@ -364,7 +381,7 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
         "save" => {
             let mut store = require_store(request.store)?;
             normalize_store(&mut store);
-            write_store(&store_path, &store)?;
+            write_store_if_changed(&store_path, &store)?;
             CoreResponse {
                 store: Some(store),
                 imported: vec![],
@@ -381,7 +398,7 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
             let mut store = require_store(request.store)?;
             normalize_store(&mut store);
             let (imported, updated) = sync_overrides(&mut store)?;
-            write_store(&store_path, &store)?;
+            write_store_if_changed(&store_path, &store)?;
             CoreResponse {
                 store: Some(store),
                 imported,
@@ -414,7 +431,7 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
             let mut store = require_store(request.store)?;
             normalize_store(&mut store);
             disable(&mut store)?;
-            write_store(&store_path, &store)?;
+            write_store_if_changed(&store_path, &store)?;
             CoreResponse {
                 store: Some(store),
                 imported: vec![],
@@ -430,8 +447,8 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
         "refreshChromeProfile" => {
             let mut store = require_store(request.store)?;
             normalize_store(&mut store);
-            refresh_chrome_profile(&mut store);
-            write_store(&store_path, &store)?;
+            refresh_chrome_profile(&mut store, true);
+            write_store_if_changed(&store_path, &store)?;
             CoreResponse {
                 store: Some(store),
                 imported: vec![],
@@ -452,7 +469,7 @@ fn run_core_protocol(args: &[String]) -> Result<(), Box<dyn std::error::Error>> 
                 request.curl.as_deref().unwrap_or(""),
                 request.fetch_response.unwrap_or(false),
             )?;
-            write_store(&store_path, &store)?;
+            write_store_if_changed(&store_path, &store)?;
             let _ = apply_store(&store)?;
             CoreResponse {
                 store: Some(store),
@@ -543,20 +560,27 @@ struct CliOptions {
 
 fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let (options, remaining) = parse_cli_options(args)?;
+    if let Some(help_path) = cli_help_path(&remaining) {
+        print_cli_help_for(&help_path)?;
+        return Ok(());
+    }
     let command = remaining.first().map(String::as_str).unwrap_or("help");
+    let _store_lock = cli_command_needs_store_lock(command, &remaining)
+        .then(|| lock_store(&options.store_path))
+        .transpose()?;
     match command {
-        "-h" | "--help" | "help" => {
-            print_cli_help();
-            Ok(())
-        }
+        "-h" | "--help" | "help" => Ok(()),
         "status" => cli_status(&options),
-        "list" => cli_list(&options),
+        "list" => cli_list(&options, &remaining[1..]),
+        "search" | "find" => cli_search(&options, &remaining[1..]),
         "show" | "get" => cli_show(&options, &remaining[1..]),
+        "endpoint" => cli_endpoint(&options, &remaining[1..]),
+        "group" => cli_group(&options, &remaining[1..]),
         "scan" | "sync" => cli_scan(&options),
         "apply" => cli_apply(&options),
         "delete" | "remove" | "rm" => cli_delete_endpoints(&options, &remaining[1..]),
         "disable" => cli_disable(&options, &remaining[1..]),
-        "enable" => cli_set_enabled(&options, &remaining[1..], true),
+        "enable" => cli_enable(&options, &remaining[1..]),
         "edit" | "update" => cli_edit_endpoint(&options, &remaining[1..]),
         "case" => cli_case(&options, &remaining[1..]),
         "add-case" => cli_case_add(&options, &remaining[1..]),
@@ -565,6 +589,59 @@ fn run_cli(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         "import-curl" => cli_import_curl(&options, &remaining[1..]),
         "use" | "set-case" => cli_use_case(&options, &remaining[1..]),
         _ => Err(format!("unknown CLI command: {command}. Run `mockkit help`.").into()),
+    }
+}
+
+fn cli_help_path(args: &[String]) -> Option<Vec<String>> {
+    if args.is_empty() {
+        return Some(vec![]);
+    }
+    if matches!(args[0].as_str(), "help" | "-h" | "--help") {
+        return Some(args[1..].to_vec());
+    }
+    if args.get(1).is_some_and(|arg| arg == "help") {
+        return Some(
+            std::iter::once(args[0].clone())
+                .chain(args[2..].iter().cloned())
+                .collect(),
+        );
+    }
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help"))
+    {
+        return Some(
+            args.iter()
+                .filter(|arg| !matches!(arg.as_str(), "-h" | "--help"))
+                .cloned()
+                .collect(),
+        );
+    }
+    None
+}
+
+fn core_command_needs_store_lock(command: &str) -> bool {
+    matches!(
+        command,
+        "load" | "save" | "sync" | "apply" | "disable" | "refreshChromeProfile" | "importCurl"
+    )
+}
+
+fn cli_command_needs_store_lock(command: &str, args: &[String]) -> bool {
+    match command {
+        "endpoint" => !matches!(
+            args.get(1).map(String::as_str),
+            Some("list" | "show" | "get")
+        ),
+        "group" => !matches!(
+            args.get(1).map(String::as_str),
+            Some("list" | "show" | "get")
+        ),
+        "case" => !matches!(args.get(1).map(String::as_str), Some("list" | "ls")),
+        "scan" | "sync" | "apply" | "delete" | "remove" | "rm" | "disable" | "enable" | "edit"
+        | "update" | "add-case" | "update-case" | "edit-case" | "delete-case" | "remove-case"
+        | "import-curl" | "use" | "set-case" => true,
+        _ => false,
     }
 }
 
@@ -685,7 +762,7 @@ fn load_cli_store(options: &CliOptions) -> Result<Store, Box<dyn std::error::Err
     if let Some(folder) = &options.overrides_folder {
         store.overrides_folder = folder.clone();
     }
-    refresh_chrome_profile(&mut store);
+    refresh_chrome_profile(&mut store, false);
     if let Some(folder) = &options.overrides_folder {
         store.overrides_folder = folder.clone();
     }
@@ -699,7 +776,7 @@ fn save_cli_store(options: &CliOptions, store: &Store) -> Result<(), Box<dyn std
             .map(|stored| stored.overrides_folder)
             .unwrap_or_else(default_overrides_folder);
     }
-    write_store(&options.store_path, &persisted_store)
+    write_store_if_changed(&options.store_path, &persisted_store)
 }
 
 fn print_cli_help() {
@@ -711,23 +788,40 @@ Usage:
 
 Commands:
   status                         Show store, Chrome profile, and endpoint counts
-  list                           List endpoints with short ids and active cases
+  endpoint add <path> [options]  Create an endpoint with its initial response case
+  endpoint list [filters]        List or filter endpoints
+  endpoint show <endpoint>       Show an endpoint and its active response case
+  endpoint edit <endpoint>       Edit an endpoint
+  endpoint move <endpoint>       Move or reorder an endpoint
+  endpoint delete <endpoint...>  Delete one or more endpoints
+  group add <path>               Create a group, including missing parent groups
+  group list                     List groups and endpoint counts
+  group show <path>              Show one group and its descendants
+  group rename <path> <new-path> Rename a group, its descendants, and endpoint assignments
+  group reorder <path>           Reorder a group among its siblings
+  group delete <path>            Delete a group, descendants, and contained endpoints
+  list [filters]                 List or filter endpoints
+  search <query> [filters]       Search endpoint metadata and response cases
   show <endpoint> [case]         Show one endpoint/case with full mock body
   show <endpoint> [case] --body  Print only the selected mock body
   sync                           Import/update files from the Overrides folder
   apply                          Reconcile Store state into Chrome Overrides
   delete <endpoint...>           Delete one or more endpoints
+  delete --all                   Delete every endpoint and group
   delete --group <path>          Delete endpoints in a group and its subgroups
   delete --matching <text>       Delete matching endpoints in batch
-  disable [--all]                Disable all mocks and remove managed files
+  disable                        Turn off the global Mock switch
+  disable --all                  Turn off the global switch and every endpoint
   disable <endpoint...>          Disable one or more endpoints
   disable --group <path>         Disable endpoints in a group
   disable --matching <text>      Disable matching endpoints in batch
+  enable                         Turn on the global Mock switch
   enable <endpoint...>           Enable one or more endpoints
   enable --all                   Enable all endpoints and the global mock switch
   enable --group <path>          Enable endpoints in a group
   enable --matching <text>       Enable matching endpoints in batch
   edit <endpoint> [options]      Edit endpoint title, description, path, method, group, or tags
+  case list <endpoint>           List every response case for an endpoint
   case add <endpoint> [options]  Add a response case and activate it by default
   case update <endpoint> <case>  Edit a response case name, body, status, or headers
   case delete <endpoint> <case>  Delete a response case
@@ -745,6 +839,18 @@ Edit options:
   --tag <tag>                    Set tags; can be repeated
   --tags <tag,tag>               Set comma/newline separated tags
 
+Endpoint add options:
+  --name <text>                  Set endpoint title; defaults to the path
+  --method <method>              Set HTTP method; defaults to GET
+  --group <path>                 Assign the endpoint to a group
+  --description <text>           Set endpoint description
+  --tag <tag>                    Set tags; can be repeated
+  --case-name <text>             Set initial response case name; defaults to Default
+  --body <text>                  Set initial response body
+  --body-file <path>             Read initial response body from a file; use - for stdin
+  --status <code>                Set initial response status; defaults to 200
+  --headers <text>               Set initial response headers
+
 Case options:
   --name <text>                  Set case name
   --body <text>                  Set response body
@@ -759,10 +865,115 @@ Delete options:
   --dry-run                      Preview matched endpoints without deleting
   --yes                          Skip the interactive confirmation
 
+Search options:
+  --matching <text>              Match name, method, path, description, group, tag, or case content
+  --regex                        Treat the query as a case-insensitive regular expression
+  --group <path>                 Limit results to a group and its subgroups
+  --root                         Limit results to ungrouped endpoints
+  --method <method>              Limit results to an HTTP method
+  --enabled <on|off>             Limit results by endpoint state
+  --limit <count>                Return at most this many endpoints
+
+Ordering options:
+  --before <item>                Place before another endpoint or sibling group
+  --after <item>                 Place after another endpoint or sibling group
+  --first                        Place first in the destination
+  --last                         Place last in the destination
+
 Environment:
   MOCKKIT_STORE_PATH             Override the default App Support store path
   MOCKKIT_OVERRIDES_FOLDER       Override the default Chrome Overrides folder
 "#
+    );
+}
+
+fn print_cli_help_for(path: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let command = path.first().map(String::as_str);
+    let subcommand = path.get(1).map(String::as_str);
+    match (command, subcommand) {
+        (None, _) => print_cli_help(),
+        (Some("endpoint"), None) => println!(
+            "Endpoint commands:\n  mockkit endpoint add <path> [options]\n  mockkit endpoint list [filters]\n  mockkit endpoint show <endpoint> [case]\n  mockkit endpoint edit <endpoint> [options]\n  mockkit endpoint move <endpoint> [--group <path> | --root] [ordering]\n  mockkit endpoint delete <endpoint...> [--dry-run | --yes]"
+        ),
+        (Some("endpoint"), Some("add" | "create")) => println!(
+            "Usage: mockkit endpoint add <path> [--name <text>] [--method <method>] [--group <path>] [--description <text>] [--tag <tag>] [--case-name <text>] [--body <text> | --body-file <path>] [--status <code>] [--headers <text>]"
+        ),
+        (Some("endpoint"), Some("list" | "ls")) => print_search_help("mockkit endpoint list [query] [filters]"),
+        (Some("endpoint"), Some("show" | "get")) => println!(
+            "Usage: mockkit endpoint show <endpoint> [case] [--body]\nThe endpoint may be a full/short ID, exact name, or path fragment."
+        ),
+        (Some("endpoint"), Some("edit" | "update")) | (Some("edit" | "update"), _) => println!(
+            "Usage: mockkit endpoint edit <endpoint> [--name <text>] [--description <text> | --description-file <path>] [--method <method>] [--path <path>] [--group <path> | --clear-group] [--tag <tag> | --tags <list>]"
+        ),
+        (Some("endpoint"), Some("move" | "reorder")) => println!(
+            "Usage: mockkit endpoint move <endpoint> [--group <path> | --root] [--before <endpoint> | --after <endpoint> | --first | --last]\nWith only --group/--root, the endpoint is appended to that destination."
+        ),
+        (Some("endpoint"), Some("delete" | "remove" | "rm")) => println!(
+            "Usage: mockkit endpoint delete <endpoint...> [--group <path> | --matching <text> | --all] [--dry-run | --yes]"
+        ),
+        (Some("group"), None) => println!(
+            "Group commands:\n  mockkit group add <path>\n  mockkit group list\n  mockkit group show <path>\n  mockkit group rename <path> <new-path>\n  mockkit group reorder <path> [--before <sibling> | --after <sibling> | --first | --last]\n  mockkit group delete <path> [--dry-run | --yes]"
+        ),
+        (Some("group"), Some("add" | "create")) => {
+            println!("Usage: mockkit group add <path>\nMissing parent groups are created automatically.")
+        }
+        (Some("group"), Some("list" | "ls")) => println!("Usage: mockkit group list"),
+        (Some("group"), Some("show" | "get")) => println!("Usage: mockkit group show <path>"),
+        (Some("group"), Some("rename" | "move" | "update")) => println!(
+            "Usage: mockkit group rename <path> <new-path>\nNested groups and endpoint assignments move with the group."
+        ),
+        (Some("group"), Some("reorder")) => println!(
+            "Usage: mockkit group reorder <path> [--before <sibling> | --after <sibling> | --first | --last]"
+        ),
+        (Some("group"), Some("delete" | "remove" | "rm")) => println!(
+            "Usage: mockkit group delete <path> [--dry-run | --yes]\nNested groups and contained endpoints are included."
+        ),
+        (Some("case"), None) => println!(
+            "Case commands:\n  mockkit case list <endpoint>\n  mockkit case add <endpoint> [options]\n  mockkit case update <endpoint> <case> [options]\n  mockkit case delete <endpoint> <case> [--yes]"
+        ),
+        (Some("case"), Some("list" | "ls")) => println!("Usage: mockkit case list <endpoint>"),
+        (Some("case"), Some("add" | "create")) | (Some("add-case"), _) => println!(
+            "Usage: mockkit case add <endpoint> [--name <text>] [--body <text> | --body-file <path> | --body-stdin] [--status <code>] [--headers <text> | --headers-file <path>] [--no-activate]"
+        ),
+        (Some("case"), Some("update" | "edit" | "set"))
+        | (Some("update-case" | "edit-case"), _) => println!(
+            "Usage: mockkit case update <endpoint> <case> [--name <text>] [--body <text> | --body-file <path> | --body-stdin] [--status <code>] [--headers <text> | --headers-file <path>] [--activate]"
+        ),
+        (Some("case"), Some("delete" | "remove" | "rm"))
+        | (Some("delete-case" | "remove-case"), _) => println!(
+            "Usage: mockkit case delete <endpoint> <case> [--yes]"
+        ),
+        (Some("list"), _) => print_search_help("mockkit list [query] [filters]"),
+        (Some("search" | "find"), _) => print_search_help("mockkit search <query> [filters]"),
+        (Some("status"), _) => println!("Usage: mockkit status [--json]"),
+        (Some("show" | "get"), _) => println!("Usage: mockkit show <endpoint> [case] [--body]"),
+        (Some("sync" | "scan"), _) => println!(
+            "Usage: mockkit sync\nImports new files and external body changes from the Overrides folder into the Store."
+        ),
+        (Some("apply"), _) => println!(
+            "Usage: mockkit apply\nRepairs managed Override files from the Store. Normal mutations already apply automatically."
+        ),
+        (Some("delete" | "remove" | "rm"), _) => println!(
+            "Usage: mockkit delete <endpoint...> [--group <path> | --matching <text> | --all] [--dry-run | --yes]"
+        ),
+        (Some("disable"), _) => println!(
+            "Usage: mockkit disable [<endpoint...> | --group <path> | --matching <text> | --all]\nWith no endpoint selector, only the global Mock switch is turned off."
+        ),
+        (Some("enable"), _) => println!(
+            "Usage: mockkit enable [<endpoint...> | --group <path> | --matching <text> | --all]\nWith no endpoint selector, only the global Mock switch is turned on. --all also enables every endpoint."
+        ),
+        (Some("import-curl"), _) => println!(
+            "Usage: mockkit import-curl [--fetch] [--file <path>] <curl>\nA cURL command can also be read from stdin."
+        ),
+        (Some("use" | "set-case"), _) => println!("Usage: mockkit use <endpoint> <case>"),
+        (Some(command), _) => return Err(format!("unknown help topic: {command}").into()),
+    }
+    Ok(())
+}
+
+fn print_search_help(usage: &str) {
+    println!(
+        "Usage: {usage}\nFilters:\n  --matching <text>    Match endpoint metadata and response cases\n  --regex              Treat the query as a case-insensitive regular expression\n  --group <path>       Limit to a group and its subgroups\n  --root               Limit to ungrouped endpoints\n  --method <method>    Limit to an HTTP method\n  --enabled <on|off>   Limit by endpoint state\n  --limit <count>      Return at most this many endpoints"
     );
 }
 
@@ -824,17 +1035,1054 @@ fn cli_status(options: &CliOptions) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn cli_list(options: &CliOptions) -> Result<(), Box<dyn std::error::Error>> {
-    let store = load_cli_store(options)?;
+fn cli_endpoint(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        return Err("endpoint requires add, list, show, edit, move, or delete".into());
+    };
+    match subcommand {
+        "add" | "create" => cli_endpoint_add(options, &args[1..]),
+        "list" | "ls" => cli_list(options, &args[1..]),
+        "show" | "get" => cli_show(options, &args[1..]),
+        "edit" | "update" => cli_edit_endpoint(options, &args[1..]),
+        "move" | "reorder" => cli_endpoint_move(options, &args[1..]),
+        "delete" | "remove" | "rm" => cli_delete_endpoints(options, &args[1..]),
+        _ => Err(format!("unknown endpoint command: {subcommand}").into()),
+    }
+}
+
+#[derive(Debug, Default)]
+struct CliEndpointAddOptions {
+    override_path: Option<String>,
+    name: Option<String>,
+    description: Option<String>,
+    method: Option<String>,
+    group_path: Option<String>,
+    tags: Vec<String>,
+    case_name: Option<String>,
+    body: Option<String>,
+    status: Option<i32>,
+    headers: Option<String>,
+}
+
+fn cli_endpoint_add(
+    options: &CliOptions,
+    args: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let add_options = parse_endpoint_add_args(args)?;
+    let clean_path = sanitized_relative_path(
+        add_options
+            .override_path
+            .as_deref()
+            .ok_or("endpoint add requires <path> or --path <path>")?,
+    );
+    if clean_path.is_empty() {
+        return Err("endpoint path cannot be empty".into());
+    }
+
+    let method = add_options
+        .method
+        .unwrap_or_else(|| "GET".to_string())
+        .trim()
+        .to_uppercase();
+    if method.is_empty() {
+        return Err("--method cannot be empty".into());
+    }
+
+    let mut store = load_cli_store(options)?;
+    if let Some(conflict) = conflicting_override_path(&store, &clean_path, None) {
+        return Err(
+            format!("endpoint path conflicts with existing override path: {conflict}").into(),
+        );
+    }
+
+    let endpoint_id = new_id();
+    let case_id = new_id();
+    let group_path = add_options
+        .group_path
+        .as_deref()
+        .map(sanitized_relative_path)
+        .filter(|path| !path.is_empty());
+    let mock_case = MockCase {
+        id: case_id.clone(),
+        name: add_options
+            .case_name
+            .unwrap_or_else(|| "Default".to_string()),
+        body: add_options.body.unwrap_or_default(),
+        status: add_options.status.unwrap_or(200),
+        headers: add_options.headers.unwrap_or_default(),
+    };
+    let endpoint = Endpoint {
+        id: endpoint_id.clone(),
+        name: add_options.name.unwrap_or_else(|| clean_path.clone()),
+        method,
+        override_path: clean_path,
+        group_path: group_path.clone(),
+        description: add_options.description.unwrap_or_default(),
+        tags: unique_non_empty_values(add_options.tags),
+        enabled: Some(true),
+        active_case_id: Some(case_id),
+        cases: vec![mock_case],
+    };
+
+    if let Some(group_path) = group_path {
+        remember_group_path(&mut store, &group_path);
+    }
+    store.endpoints.push(endpoint.clone());
+    normalize_store(&mut store);
+    save_cli_store(options, &store)?;
+    let written = apply_store(&store)?;
+
     if options.json {
-        println!("{}", serde_json::to_string_pretty(&store.endpoints)?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "endpoint": endpoint,
+                "applied": true,
+                "written": written,
+            }))?
+        );
+    } else {
+        println!(
+            "Created endpoint `{}` ({} {}).",
+            endpoint.name, endpoint.method, endpoint.override_path
+        );
+        println!("Applied {} managed override files.", written.len());
+    }
+    Ok(())
+}
+
+fn parse_endpoint_add_args(
+    args: &[String],
+) -> Result<CliEndpointAddOptions, Box<dyn std::error::Error>> {
+    let mut options = CliEndpointAddOptions::default();
+    let mut positional = vec![];
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--path" | "--override-path" => {
+                options.override_path = Some(take_cli_value(args, &mut index, "--path")?);
+            }
+            value if value.starts_with("--path=") => {
+                options.override_path = Some(value.trim_start_matches("--path=").to_string());
+            }
+            value if value.starts_with("--override-path=") => {
+                options.override_path =
+                    Some(value.trim_start_matches("--override-path=").to_string());
+            }
+            "--name" | "--title" | "-n" => {
+                options.name = Some(take_cli_value(args, &mut index, "--name")?);
+            }
+            value if value.starts_with("--name=") => {
+                options.name = Some(value.trim_start_matches("--name=").to_string());
+            }
+            "--description" | "--desc" | "-d" => {
+                options.description = Some(take_cli_value(args, &mut index, "--description")?);
+            }
+            value if value.starts_with("--description=") => {
+                options.description = Some(value.trim_start_matches("--description=").to_string());
+            }
+            "--description-file" => {
+                let path = take_cli_value(args, &mut index, "--description-file")?;
+                options.description = Some(read_cli_text_source(&path)?);
+            }
+            "--method" | "-X" => {
+                options.method = Some(take_cli_value(args, &mut index, "--method")?);
+            }
+            value if value.starts_with("--method=") => {
+                options.method = Some(value.trim_start_matches("--method=").to_string());
+            }
+            "--group" | "-g" => {
+                options.group_path = Some(take_cli_value(args, &mut index, "--group")?);
+            }
+            value if value.starts_with("--group=") => {
+                options.group_path = Some(value.trim_start_matches("--group=").to_string());
+            }
+            "--tag" => {
+                options
+                    .tags
+                    .extend(split_cli_tags(&take_cli_value(args, &mut index, "--tag")?));
+            }
+            value if value.starts_with("--tag=") => {
+                options
+                    .tags
+                    .extend(split_cli_tags(value.trim_start_matches("--tag=")));
+            }
+            "--tags" => {
+                options
+                    .tags
+                    .extend(split_cli_tags(&take_cli_value(args, &mut index, "--tags")?));
+            }
+            value if value.starts_with("--tags=") => {
+                options
+                    .tags
+                    .extend(split_cli_tags(value.trim_start_matches("--tags=")));
+            }
+            "--case-name" => {
+                options.case_name = Some(take_cli_value(args, &mut index, "--case-name")?);
+            }
+            value if value.starts_with("--case-name=") => {
+                options.case_name = Some(value.trim_start_matches("--case-name=").to_string());
+            }
+            "--body" => {
+                options.body = Some(take_cli_value(args, &mut index, "--body")?);
+            }
+            value if value.starts_with("--body=") => {
+                options.body = Some(value.trim_start_matches("--body=").to_string());
+            }
+            "--body-file" => {
+                let path = take_cli_value(args, &mut index, "--body-file")?;
+                options.body = Some(read_cli_text_source(&path)?);
+            }
+            value if value.starts_with("--body-file=") => {
+                options.body = Some(read_cli_text_source(
+                    value.trim_start_matches("--body-file="),
+                )?);
+            }
+            "--body-stdin" => options.body = Some(read_cli_text_source("-")?),
+            "--status" => {
+                let value = take_cli_value(args, &mut index, "--status")?;
+                options.status = Some(parse_http_status(&value)?);
+            }
+            value if value.starts_with("--status=") => {
+                options.status = Some(parse_http_status(value.trim_start_matches("--status="))?);
+            }
+            "--headers" => {
+                options.headers = Some(take_cli_value(args, &mut index, "--headers")?);
+            }
+            value if value.starts_with("--headers=") => {
+                options.headers = Some(value.trim_start_matches("--headers=").to_string());
+            }
+            "--headers-file" => {
+                let path = take_cli_value(args, &mut index, "--headers-file")?;
+                options.headers = Some(read_cli_text_source(&path)?);
+            }
+            value if value.starts_with("--headers-file=") => {
+                options.headers = Some(read_cli_text_source(
+                    value.trim_start_matches("--headers-file="),
+                )?);
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown option: {value}").into());
+            }
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if positional.len() > 1 {
+        return Err("endpoint add accepts exactly one path".into());
+    }
+    if options.override_path.is_some() && !positional.is_empty() {
+        return Err(
+            "provide the endpoint path either positionally or with --path, not both".into(),
+        );
+    }
+    if options.override_path.is_none() {
+        options.override_path = positional.into_iter().next();
+    }
+    Ok(options)
+}
+
+fn conflicting_override_path<'a>(
+    store: &'a Store,
+    candidate: &str,
+    excluded_index: Option<usize>,
+) -> Option<&'a str> {
+    store
+        .endpoints
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| Some(*index) != excluded_index)
+        .map(|(_, endpoint)| endpoint.override_path.as_str())
+        .find(|existing| {
+            *existing == candidate
+                || existing.starts_with(&format!("{candidate}/"))
+                || candidate.starts_with(&format!("{existing}/"))
+        })
+}
+
+#[derive(Debug)]
+enum CliOrdering {
+    Before(String),
+    After(String),
+    First,
+    Last,
+}
+
+fn set_cli_ordering(
+    ordering: &mut Option<CliOrdering>,
+    next: CliOrdering,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if ordering.is_some() {
+        return Err("use only one of --before, --after, --first, or --last".into());
+    }
+    *ordering = Some(next);
+    Ok(())
+}
+
+fn parent_group_path(path: &str) -> Option<&str> {
+    path.rsplit_once('/').map(|(parent, _)| parent)
+}
+
+fn is_direct_child_group(path: &str, parent: Option<&str>) -> bool {
+    match parent {
+        Some(parent) => path
+            .strip_prefix(&format!("{parent}/"))
+            .map(|suffix| !suffix.is_empty() && !suffix.contains('/'))
+            .unwrap_or(false),
+        None => !path.contains('/'),
+    }
+}
+
+fn cli_group(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        return Err("group requires add, list, show, rename, reorder, or delete".into());
+    };
+    match subcommand {
+        "add" | "create" => cli_group_add(options, &args[1..]),
+        "list" | "ls" => cli_group_list(options, &args[1..]),
+        "show" | "get" => cli_group_show(options, &args[1..]),
+        "rename" | "move" | "update" => cli_group_rename(options, &args[1..]),
+        "reorder" => cli_group_reorder(options, &args[1..]),
+        "delete" | "remove" | "rm" => cli_group_delete(options, &args[1..]),
+        _ => Err(format!("unknown group command: {subcommand}").into()),
+    }
+}
+
+fn cli_group_add(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.len() != 1 {
+        return Err("group add requires exactly one <path>".into());
+    }
+    let group_path = sanitized_relative_path(&args[0]);
+    if group_path.is_empty() {
+        return Err("group path cannot be empty".into());
+    }
+    let mut store = load_cli_store(options)?;
+    let existing = store.group_paths.clone().unwrap_or_default();
+    if existing.iter().any(|path| path == &group_path) {
+        return Err(format!("group already exists: {group_path}").into());
+    }
+    remember_group_path(&mut store, &group_path);
+    normalize_store(&mut store);
+    let created = store
+        .group_paths
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|path| !existing.contains(path))
+        .collect::<Vec<_>>();
+    save_cli_store(options, &store)?;
+
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "group": group_path,
+                "created": created,
+            }))?
+        );
+    } else {
+        println!("Created group `{group_path}`.");
+        if created.len() > 1 {
+            println!("Also created missing parent groups.");
+        }
+    }
+    Ok(())
+}
+
+fn group_summary(store: &Store, group_path: &str) -> Value {
+    let child_prefix = format!("{group_path}/");
+    let groups = store.group_paths.as_deref().unwrap_or_default();
+    let direct_endpoints = store
+        .endpoints
+        .iter()
+        .filter(|endpoint| endpoint.group_path.as_deref() == Some(group_path))
+        .count();
+    let total_endpoints = store
+        .endpoints
+        .iter()
+        .filter(|endpoint| {
+            endpoint
+                .group_path
+                .as_deref()
+                .map(|path| path == group_path || path.starts_with(&child_prefix))
+                .unwrap_or(false)
+        })
+        .count();
+    let child_groups = groups
+        .iter()
+        .filter(|path| path.starts_with(&child_prefix))
+        .filter(|path| !path[child_prefix.len()..].contains('/'))
+        .cloned()
+        .collect::<Vec<_>>();
+    json!({
+        "path": group_path,
+        "directEndpoints": direct_endpoints,
+        "totalEndpoints": total_endpoints,
+        "childGroups": child_groups,
+    })
+}
+
+fn cli_group_list(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if !args.is_empty() {
+        return Err("group list does not accept arguments".into());
+    }
+    let store = load_cli_store(options)?;
+    let summaries = store
+        .group_paths
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|path| group_summary(&store, path))
+        .collect::<Vec<_>>();
+    if options.json {
+        println!("{}", serde_json::to_string_pretty(&summaries)?);
+    } else if summaries.is_empty() {
+        println!("No groups yet. Run `mockkit group add <path>`.");
+    } else {
+        for summary in summaries {
+            println!(
+                "{}  ({} direct, {} total)",
+                summary["path"].as_str().unwrap_or_default(),
+                summary["directEndpoints"].as_u64().unwrap_or_default(),
+                summary["totalEndpoints"].as_u64().unwrap_or_default()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn cli_group_show(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.len() != 1 {
+        return Err("group show requires exactly one <path>".into());
+    }
+    let store = load_cli_store(options)?;
+    let group_path = require_group_path(&store, &args[0])?;
+    let prefix = format!("{group_path}/");
+    let endpoints = store
+        .endpoints
+        .iter()
+        .filter(|endpoint| {
+            endpoint
+                .group_path
+                .as_deref()
+                .map(|path| path == group_path || path.starts_with(&prefix))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let summary = group_summary(&store, &group_path);
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "group": summary,
+                "endpoints": endpoints,
+            }))?
+        );
+    } else {
+        println!("group: {group_path}");
+        println!("endpoints: {}", endpoints.len());
+        for endpoint in endpoints {
+            println!("  {}  {}", short_id(&endpoint.id), endpoint.name);
+        }
+    }
+    Ok(())
+}
+
+fn cli_group_rename(
+    options: &CliOptions,
+    args: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if args.len() != 2 {
+        return Err("group rename requires <path> and <new-path>".into());
+    }
+    let mut store = load_cli_store(options)?;
+    let old_path = require_group_path(&store, &args[0])?;
+    let new_path = sanitized_relative_path(&args[1]);
+    if new_path.is_empty() {
+        return Err("new group path cannot be empty".into());
+    }
+    if old_path == new_path {
+        return Err("new group path must be different".into());
+    }
+    if new_path.starts_with(&format!("{old_path}/")) {
+        return Err("cannot move a group inside itself".into());
+    }
+
+    let old_prefix = format!("{old_path}/");
+    let existing = store.group_paths.clone().unwrap_or_default();
+    let renamed_paths = existing
+        .iter()
+        .filter(|path| *path == &old_path || path.starts_with(&old_prefix))
+        .map(|path| rewrite_group_prefix(path, &old_path, &new_path))
+        .collect::<HashSet<_>>();
+    if let Some(conflict) = existing
+        .iter()
+        .filter(|path| *path != &old_path && !path.starts_with(&old_prefix))
+        .find(|path| renamed_paths.contains(*path))
+    {
+        return Err(format!("group rename conflicts with existing group: {conflict}").into());
+    }
+
+    let mut group_paths = existing
+        .into_iter()
+        .map(|path| rewrite_group_prefix(&path, &old_path, &new_path))
+        .collect::<Vec<_>>();
+    let insertion_index = group_paths
+        .iter()
+        .position(|path| path == &new_path || path.starts_with(&format!("{new_path}/")))
+        .unwrap_or(group_paths.len());
+    let mut inserted = 0usize;
+    for ancestor in ancestor_group_paths(&new_path) {
+        if !group_paths.contains(&ancestor) {
+            group_paths.insert(insertion_index + inserted, ancestor);
+            inserted += 1;
+        }
+    }
+    store.group_paths = Some(group_paths);
+
+    let mut updated_endpoints = 0usize;
+    for endpoint in &mut store.endpoints {
+        let Some(group_path) = endpoint.group_path.clone() else {
+            continue;
+        };
+        if group_path == old_path || group_path.starts_with(&old_prefix) {
+            endpoint.group_path = Some(rewrite_group_prefix(&group_path, &old_path, &new_path));
+            updated_endpoints += 1;
+        }
+    }
+    normalize_store(&mut store);
+    save_cli_store(options, &store)?;
+
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "from": old_path,
+                "to": new_path,
+                "updatedEndpoints": updated_endpoints,
+            }))?
+        );
+    } else {
+        println!("Renamed group `{old_path}` to `{new_path}`.");
+        println!("Updated {updated_endpoints} endpoint assignments.");
+    }
+    Ok(())
+}
+
+fn cli_group_reorder(
+    options: &CliOptions,
+    args: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut positional = vec![];
+    let mut ordering = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--before" => {
+                index += 1;
+                set_cli_ordering(
+                    &mut ordering,
+                    CliOrdering::Before(
+                        args.get(index)
+                            .ok_or("--before requires a sibling group")?
+                            .clone(),
+                    ),
+                )?;
+            }
+            value if value.starts_with("--before=") => set_cli_ordering(
+                &mut ordering,
+                CliOrdering::Before(value.trim_start_matches("--before=").to_string()),
+            )?,
+            "--after" => {
+                index += 1;
+                set_cli_ordering(
+                    &mut ordering,
+                    CliOrdering::After(
+                        args.get(index)
+                            .ok_or("--after requires a sibling group")?
+                            .clone(),
+                    ),
+                )?;
+            }
+            value if value.starts_with("--after=") => set_cli_ordering(
+                &mut ordering,
+                CliOrdering::After(value.trim_start_matches("--after=").to_string()),
+            )?,
+            "--first" => set_cli_ordering(&mut ordering, CliOrdering::First)?,
+            "--last" => set_cli_ordering(&mut ordering, CliOrdering::Last)?,
+            value if value.starts_with('-') => {
+                return Err(format!("unknown group reorder option: {value}").into());
+            }
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+    if positional.len() != 1 {
+        return Err("group reorder requires exactly one <path>".into());
+    }
+    let ordering =
+        ordering.ok_or("group reorder requires --before, --after, --first, or --last")?;
+
+    let mut store = load_cli_store(options)?;
+    let source_path = require_group_path(&store, &positional[0])?;
+    let source_parent = parent_group_path(&source_path).map(str::to_string);
+    let source_prefix = format!("{source_path}/");
+    let existing_paths = store.group_paths.take().unwrap_or_default();
+    let mut moved_paths = vec![];
+    let mut remaining_paths = vec![];
+    for path in existing_paths {
+        if path == source_path || path.starts_with(&source_prefix) {
+            moved_paths.push(path);
+        } else {
+            remaining_paths.push(path);
+        }
+    }
+
+    let place_before = matches!(&ordering, CliOrdering::Before(_));
+    let insertion_index = match ordering {
+        CliOrdering::Before(target) | CliOrdering::After(target) => {
+            let target_path = require_group_path(
+                &Store {
+                    group_paths: Some(remaining_paths.clone()),
+                    ..store.clone()
+                },
+                &target,
+            )?;
+            if parent_group_path(&target_path) != source_parent.as_deref() {
+                return Err("groups can only be reordered among siblings".into());
+            }
+            if place_before {
+                remaining_paths
+                    .iter()
+                    .position(|path| path == &target_path)
+                    .ok_or("target group was not found")?
+            } else {
+                let target_prefix = format!("{target_path}/");
+                remaining_paths
+                    .iter()
+                    .rposition(|path| path == &target_path || path.starts_with(&target_prefix))
+                    .map(|index| index + 1)
+                    .ok_or("target group was not found")?
+            }
+        }
+        CliOrdering::First => remaining_paths
+            .iter()
+            .position(|path| is_direct_child_group(path, source_parent.as_deref()))
+            .unwrap_or_else(|| group_subtree_end(&remaining_paths, source_parent.as_deref())),
+        CliOrdering::Last => group_subtree_end(&remaining_paths, source_parent.as_deref()),
+    };
+
+    for (offset, path) in moved_paths.iter().cloned().enumerate() {
+        remaining_paths.insert(insertion_index + offset, path);
+    }
+    store.group_paths = Some(remaining_paths);
+    normalize_store(&mut store);
+    save_cli_store(options, &store)?;
+
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "group": source_path,
+                "groupPaths": store.group_paths,
+            }))?
+        );
+    } else {
+        println!("Reordered group `{source_path}`.");
+    }
+    Ok(())
+}
+
+fn group_subtree_end(group_paths: &[String], parent: Option<&str>) -> usize {
+    match parent {
+        Some(parent) => {
+            let prefix = format!("{parent}/");
+            group_paths
+                .iter()
+                .rposition(|path| path == parent || path.starts_with(&prefix))
+                .map(|index| index + 1)
+                .unwrap_or(group_paths.len())
+        }
+        None => group_paths.len(),
+    }
+}
+
+fn cli_group_delete(
+    options: &CliOptions,
+    args: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut confirmed = false;
+    let mut dry_run = false;
+    let mut positional = vec![];
+    for arg in args {
+        match arg.as_str() {
+            "--yes" => confirmed = true,
+            "--dry-run" => dry_run = true,
+            value if value.starts_with('-') => {
+                return Err(format!("unknown option: {value}").into());
+            }
+            value => positional.push(value.to_string()),
+        }
+    }
+    if positional.len() != 1 {
+        return Err("group delete requires exactly one <path>".into());
+    }
+
+    let mut store = load_cli_store(options)?;
+    let group_path = require_group_path(&store, &positional[0])?;
+    let prefix = format!("{group_path}/");
+    let deleted_groups = store
+        .group_paths
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|path| path == &group_path || path.starts_with(&prefix))
+        .collect::<Vec<_>>();
+    let deleted_endpoints = store
+        .endpoints
+        .iter()
+        .filter(|endpoint| {
+            endpoint
+                .group_path
+                .as_deref()
+                .map(|path| path == group_path || path.starts_with(&prefix))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if dry_run {
+        if options.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "dryRun": true,
+                    "groups": deleted_groups,
+                    "endpoints": deleted_endpoints,
+                }))?
+            );
+        } else {
+            println!(
+                "Would delete {} groups and {} endpoints.",
+                deleted_groups.len(),
+                deleted_endpoints.len()
+            );
+        }
         return Ok(());
     }
-    if store.endpoints.is_empty() {
-        println!("No endpoints yet. Run `mockkit sync` or `mockkit import-curl`.");
+
+    if !confirm_cli_delete(
+        &format!(
+            "Delete group `{group_path}`, {} descendant groups, and {} endpoints?",
+            deleted_groups.len().saturating_sub(1),
+            deleted_endpoints.len()
+        ),
+        confirmed,
+        options.json,
+    )? {
+        println!("Delete cancelled.");
         return Ok(());
     }
-    for endpoint in &store.endpoints {
+
+    let endpoint_ids = deleted_endpoints
+        .iter()
+        .map(|endpoint| endpoint.id.as_str())
+        .collect::<HashSet<_>>();
+    store
+        .endpoints
+        .retain(|endpoint| !endpoint_ids.contains(endpoint.id.as_str()));
+    store.group_paths = Some(
+        store
+            .group_paths
+            .take()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|path| path != &group_path && !path.starts_with(&prefix))
+            .collect(),
+    );
+    normalize_store(&mut store);
+    save_cli_store(options, &store)?;
+    let written = apply_store(&store)?;
+
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "deletedGroups": deleted_groups,
+                "deletedEndpoints": deleted_endpoints,
+                "applied": true,
+                "written": written,
+            }))?
+        );
+    } else {
+        println!(
+            "Deleted {} groups and {} endpoints.",
+            deleted_groups.len(),
+            deleted_endpoints.len()
+        );
+        println!("Applied {} managed override files.", written.len());
+    }
+    Ok(())
+}
+
+fn require_group_path(store: &Store, query: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let clean_path = sanitized_relative_path(query);
+    store
+        .group_paths
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .find(|path| *path == &clean_path)
+        .cloned()
+        .ok_or_else(|| format!("group not found: {clean_path}").into())
+}
+
+fn rewrite_group_prefix(path: &str, old_path: &str, new_path: &str) -> String {
+    if path == old_path {
+        return new_path.to_string();
+    }
+    path.strip_prefix(&format!("{old_path}/"))
+        .map(|suffix| format!("{new_path}/{suffix}"))
+        .unwrap_or_else(|| path.to_string())
+}
+
+#[derive(Debug)]
+enum EndpointSearchPattern {
+    Text(String),
+    Regex(Regex),
+}
+
+impl EndpointSearchPattern {
+    fn matches(&self, value: &str) -> bool {
+        match self {
+            Self::Text(query) => value.to_lowercase().contains(query),
+            Self::Regex(regex) => regex.is_match(value),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct CliSearchFilters {
+    query: Option<String>,
+    regex: bool,
+    group_path: Option<Option<String>>,
+    method: Option<String>,
+    enabled: Option<bool>,
+    limit: Option<usize>,
+}
+
+fn cli_search(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let filters = parse_cli_search_filters(args, true)?;
+    list_filtered_endpoints(options, filters)
+}
+
+fn cli_list(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let filters = parse_cli_search_filters(args, false)?;
+    list_filtered_endpoints(options, filters)
+}
+
+fn parse_cli_search_filters(
+    args: &[String],
+    query_required: bool,
+) -> Result<CliSearchFilters, Box<dyn std::error::Error>> {
+    let mut filters = CliSearchFilters::default();
+    let mut positional = vec![];
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--matching" | "--match" | "-m" => {
+                index += 1;
+                filters.query = Some(
+                    args.get(index)
+                        .ok_or("--matching requires a value")?
+                        .clone(),
+                );
+            }
+            value if value.starts_with("--matching=") => {
+                filters.query = Some(value.trim_start_matches("--matching=").to_string());
+            }
+            value if value.starts_with("--match=") => {
+                filters.query = Some(value.trim_start_matches("--match=").to_string());
+            }
+            "--regex" | "-r" => filters.regex = true,
+            "--group" | "-g" => {
+                index += 1;
+                let value = args.get(index).ok_or("--group requires a value")?;
+                let path = sanitized_relative_path(value);
+                if path.is_empty() {
+                    return Err("--group cannot be empty".into());
+                }
+                filters.group_path = Some(Some(path));
+            }
+            value if value.starts_with("--group=") => {
+                let path = sanitized_relative_path(value.trim_start_matches("--group="));
+                if path.is_empty() {
+                    return Err("--group cannot be empty".into());
+                }
+                filters.group_path = Some(Some(path));
+            }
+            "--root" | "--ungrouped" => filters.group_path = Some(None),
+            "--method" => {
+                index += 1;
+                filters.method = Some(
+                    args.get(index)
+                        .ok_or("--method requires a value")?
+                        .trim()
+                        .to_uppercase(),
+                );
+            }
+            value if value.starts_with("--method=") => {
+                filters.method = Some(value.trim_start_matches("--method=").trim().to_uppercase());
+            }
+            "--enabled" => {
+                index += 1;
+                filters.enabled = Some(parse_cli_enabled_filter(
+                    args.get(index).ok_or("--enabled requires on or off")?,
+                )?);
+            }
+            value if value.starts_with("--enabled=") => {
+                filters.enabled = Some(parse_cli_enabled_filter(
+                    value.trim_start_matches("--enabled="),
+                )?);
+            }
+            "--disabled" => filters.enabled = Some(false),
+            "--limit" => {
+                index += 1;
+                filters.limit = Some(parse_cli_limit(
+                    args.get(index).ok_or("--limit requires a count")?,
+                )?);
+            }
+            value if value.starts_with("--limit=") => {
+                filters.limit = Some(parse_cli_limit(value.trim_start_matches("--limit="))?);
+            }
+            value if value.starts_with('-') => {
+                return Err(format!("unknown search option: {value}").into());
+            }
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+
+    if !positional.is_empty() {
+        if filters.query.is_some() {
+            return Err(
+                "provide the search query either as text or with --matching, not both".into(),
+            );
+        }
+        filters.query = Some(positional.join(" "));
+    }
+    if filters
+        .query
+        .as_deref()
+        .is_some_and(|query| query.trim().is_empty())
+    {
+        return Err("search query cannot be empty".into());
+    }
+    if query_required && filters.query.is_none() {
+        return Err("search requires <query> or --matching <text>".into());
+    }
+    if filters.regex && filters.query.is_none() {
+        return Err("--regex requires a search query".into());
+    }
+    Ok(filters)
+}
+
+fn parse_cli_enabled_filter(value: &str) -> Result<bool, Box<dyn std::error::Error>> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "on" | "true" | "enabled" | "1" => Ok(true),
+        "off" | "false" | "disabled" | "0" => Ok(false),
+        _ => Err("--enabled requires on or off".into()),
+    }
+}
+
+fn parse_cli_limit(value: &str) -> Result<usize, Box<dyn std::error::Error>> {
+    let limit = value.parse::<usize>()?;
+    if limit == 0 {
+        return Err("--limit must be greater than zero".into());
+    }
+    Ok(limit)
+}
+
+fn endpoint_search_pattern(
+    query: Option<&str>,
+    regex: bool,
+) -> Result<Option<EndpointSearchPattern>, Box<dyn std::error::Error>> {
+    let Some(query) = query else {
+        return Ok(None);
+    };
+    if regex {
+        return Ok(Some(EndpointSearchPattern::Regex(
+            RegexBuilder::new(query).case_insensitive(true).build()?,
+        )));
+    }
+    Ok(Some(EndpointSearchPattern::Text(query.to_lowercase())))
+}
+
+fn list_filtered_endpoints(
+    options: &CliOptions,
+    filters: CliSearchFilters,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let store = load_cli_store(options)?;
+    let has_filters = filters.query.is_some()
+        || filters.group_path.is_some()
+        || filters.method.is_some()
+        || filters.enabled.is_some()
+        || filters.limit.is_some();
+    let pattern = endpoint_search_pattern(filters.query.as_deref(), filters.regex)?;
+    let mut endpoints = store
+        .endpoints
+        .iter()
+        .filter(|endpoint| {
+            pattern
+                .as_ref()
+                .map(|pattern| endpoint_matches_search(endpoint, pattern))
+                .unwrap_or(true)
+        })
+        .filter(|endpoint| match &filters.group_path {
+            Some(Some(group_path)) => endpoint
+                .group_path
+                .as_deref()
+                .map(|path| path == group_path || path.starts_with(&format!("{group_path}/")))
+                .unwrap_or(false),
+            Some(None) => endpoint
+                .group_path
+                .as_deref()
+                .map(str::is_empty)
+                .unwrap_or(true),
+            None => true,
+        })
+        .filter(|endpoint| {
+            filters
+                .method
+                .as_ref()
+                .map(|method| endpoint.method.eq_ignore_ascii_case(method))
+                .unwrap_or(true)
+        })
+        .filter(|endpoint| {
+            filters
+                .enabled
+                .map(|enabled| (endpoint.enabled != Some(false)) == enabled)
+                .unwrap_or(true)
+        })
+        .collect::<Vec<_>>();
+    if let Some(limit) = filters.limit {
+        endpoints.truncate(limit);
+    }
+    if options.json {
+        println!("{}", serde_json::to_string_pretty(&endpoints)?);
+        return Ok(());
+    }
+    if endpoints.is_empty() {
+        if has_filters {
+            println!("No endpoints matched.");
+        } else {
+            println!("No endpoints yet. Run `mockkit sync` or `mockkit import-curl`.");
+        }
+        return Ok(());
+    }
+    for endpoint in endpoints {
         let active_case = active_case(endpoint)
             .map(|mock_case| mock_case.name.as_str())
             .unwrap_or("none");
@@ -962,19 +2210,41 @@ fn cli_apply(options: &CliOptions) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn cli_disable(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    if !args.is_empty() && args != ["--all"] {
-        return cli_set_enabled(options, args, false);
+    if args.is_empty() || args == ["--global"] {
+        return cli_set_global_mock(options, false);
     }
+    cli_set_enabled(options, args, false)
+}
+
+fn cli_enable(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.is_empty() || args == ["--global"] {
+        return cli_set_global_mock(options, true);
+    }
+    cli_set_enabled(options, args, true)
+}
+
+fn cli_set_global_mock(
+    options: &CliOptions,
+    enabled: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let mut store = load_cli_store(options)?;
-    disable(&mut store)?;
+    store.mock_enabled = enabled;
     save_cli_store(options, &store)?;
+    let written = apply_store(&store)?;
     if options.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&json!({ "mockEnabled": store.mock_enabled }))?
+            serde_json::to_string_pretty(&json!({
+                "mockEnabled": store.mock_enabled,
+                "written": written,
+            }))?
         );
+    } else if enabled {
+        println!("Global Mock enabled; individual endpoint states were preserved.");
+        println!("Applied {} managed override files.", written.len());
     } else {
-        println!("Mock disabled and managed override files removed.");
+        println!("Global Mock disabled; individual endpoint states were preserved.");
+        println!("Removed managed override files.");
     }
     Ok(())
 }
@@ -1041,17 +2311,16 @@ fn cli_set_enabled(
     }
 
     let mut store = load_cli_store(options)?;
-    if enabled
-        && specs
-            .iter()
-            .any(|selector| matches!(selector, CliEndpointSelector::All))
-    {
-        store.mock_enabled = true;
+    let selects_all = specs
+        .iter()
+        .any(|selector| matches!(selector, CliEndpointSelector::All));
+    if selects_all {
+        store.mock_enabled = enabled;
     }
     let mut matched = matching_endpoint_indices(&store, &specs)?;
     matched.sort_unstable();
     matched.dedup();
-    if matched.is_empty() {
+    if matched.is_empty() && !selects_all {
         return Err("no endpoints matched".into());
     }
     let matched_count = matched.len();
@@ -1068,6 +2337,7 @@ fn cli_set_enabled(
                 "overridePath": endpoint.override_path,
                 "groupPath": endpoint.group_path,
                 "enabled": enabled,
+                "mockEnabled": store.mock_enabled,
             }));
         }
     }
@@ -1337,10 +2607,11 @@ fn cli_edit_endpoint(
         if clean_path.is_empty() {
             return Err("--path cannot be empty".into());
         }
-        if store.endpoints.iter().enumerate().any(|(index, endpoint)| {
-            index != endpoint_index && endpoint.override_path == clean_path
-        }) {
-            return Err(format!("another endpoint already uses path: {clean_path}").into());
+        if let Some(conflict) = conflicting_override_path(&store, &clean_path, Some(endpoint_index))
+        {
+            return Err(
+                format!("endpoint path conflicts with existing override path: {conflict}").into(),
+            );
         }
     }
 
@@ -1420,6 +2691,195 @@ fn cli_edit_endpoint(
             "Updated endpoint `{}` ({}).",
             endpoint.name,
             changed.join(", ")
+        );
+        println!("Applied {} managed override files.", written.len());
+    }
+    Ok(())
+}
+
+fn cli_endpoint_move(
+    options: &CliOptions,
+    args: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut positional = vec![];
+    let mut destination_group: Option<Option<String>> = None;
+    let mut ordering = None;
+    let mut index = 0usize;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--group" | "-g" => {
+                index += 1;
+                let path =
+                    sanitized_relative_path(args.get(index).ok_or("--group requires a value")?);
+                if path.is_empty() {
+                    return Err("--group cannot be empty; use --root instead".into());
+                }
+                if destination_group.is_some() {
+                    return Err("use only one of --group or --root".into());
+                }
+                destination_group = Some(Some(path));
+            }
+            value if value.starts_with("--group=") => {
+                let path = sanitized_relative_path(value.trim_start_matches("--group="));
+                if path.is_empty() {
+                    return Err("--group cannot be empty; use --root instead".into());
+                }
+                if destination_group.is_some() {
+                    return Err("use only one of --group or --root".into());
+                }
+                destination_group = Some(Some(path));
+            }
+            "--root" | "--clear-group" => {
+                if destination_group.is_some() {
+                    return Err("use only one of --group or --root".into());
+                }
+                destination_group = Some(None);
+            }
+            "--before" => {
+                index += 1;
+                set_cli_ordering(
+                    &mut ordering,
+                    CliOrdering::Before(
+                        args.get(index)
+                            .ok_or("--before requires an endpoint")?
+                            .clone(),
+                    ),
+                )?;
+            }
+            value if value.starts_with("--before=") => set_cli_ordering(
+                &mut ordering,
+                CliOrdering::Before(value.trim_start_matches("--before=").to_string()),
+            )?,
+            "--after" => {
+                index += 1;
+                set_cli_ordering(
+                    &mut ordering,
+                    CliOrdering::After(
+                        args.get(index)
+                            .ok_or("--after requires an endpoint")?
+                            .clone(),
+                    ),
+                )?;
+            }
+            value if value.starts_with("--after=") => set_cli_ordering(
+                &mut ordering,
+                CliOrdering::After(value.trim_start_matches("--after=").to_string()),
+            )?,
+            "--first" => set_cli_ordering(&mut ordering, CliOrdering::First)?,
+            "--last" => set_cli_ordering(&mut ordering, CliOrdering::Last)?,
+            value if value.starts_with('-') => {
+                return Err(format!("unknown endpoint move option: {value}").into());
+            }
+            value => positional.push(value.to_string()),
+        }
+        index += 1;
+    }
+    if positional.len() != 1 {
+        return Err("endpoint move requires exactly one <endpoint>".into());
+    }
+    if destination_group.is_none() && ordering.is_none() {
+        return Err("endpoint move requires a destination or ordering option".into());
+    }
+
+    let mut store = load_cli_store(options)?;
+    let source_index = find_endpoint_index(&store, &positional[0])?;
+    let source_id = store.endpoints[source_index].id.clone();
+    let source_group = store.endpoints[source_index].group_path.clone();
+
+    let relative_target = match &ordering {
+        Some(CliOrdering::Before(query) | CliOrdering::After(query)) => {
+            let target_index = find_endpoint_index(&store, query)?;
+            if target_index == source_index {
+                return Err("an endpoint cannot be moved relative to itself".into());
+            }
+            Some(store.endpoints[target_index].clone())
+        }
+        _ => None,
+    };
+    let target_group = match destination_group {
+        Some(Some(group_path)) => {
+            require_group_path(&store, &group_path)?;
+            Some(group_path)
+        }
+        Some(None) => None,
+        None => match &relative_target {
+            Some(endpoint) => endpoint.group_path.clone(),
+            None => source_group.clone(),
+        },
+    };
+    if let Some(target) = &relative_target {
+        if target.group_path != target_group {
+            return Err("--before/--after endpoint must be in the destination group".into());
+        }
+    }
+
+    let mut moved_endpoint = store.endpoints.remove(source_index);
+    moved_endpoint.group_path = target_group.clone();
+    let insertion_index = match ordering.unwrap_or(CliOrdering::Last) {
+        CliOrdering::Before(_) => {
+            let target_id = &relative_target.as_ref().expect("target should exist").id;
+            store
+                .endpoints
+                .iter()
+                .position(|endpoint| &endpoint.id == target_id)
+                .ok_or("target endpoint was not found")?
+        }
+        CliOrdering::After(_) => {
+            let target_id = &relative_target.as_ref().expect("target should exist").id;
+            store
+                .endpoints
+                .iter()
+                .position(|endpoint| &endpoint.id == target_id)
+                .map(|index| index + 1)
+                .ok_or("target endpoint was not found")?
+        }
+        CliOrdering::First => store
+            .endpoints
+            .iter()
+            .position(|endpoint| endpoint.group_path == target_group)
+            .unwrap_or(store.endpoints.len()),
+        CliOrdering::Last => store
+            .endpoints
+            .iter()
+            .rposition(|endpoint| endpoint.group_path == target_group)
+            .map(|index| index + 1)
+            .unwrap_or(store.endpoints.len()),
+    };
+    store.endpoints.insert(insertion_index, moved_endpoint);
+    if let Some(group_path) = &target_group {
+        remember_group_path(&mut store, group_path);
+    }
+    normalize_store(&mut store);
+    save_cli_store(options, &store)?;
+    let written = apply_store(&store)?;
+    let final_index = store
+        .endpoints
+        .iter()
+        .position(|endpoint| endpoint.id == source_id)
+        .unwrap_or(insertion_index);
+    let group_position = store.endpoints[..=final_index]
+        .iter()
+        .filter(|endpoint| endpoint.group_path == target_group)
+        .count();
+
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "endpoint": store.endpoints[final_index],
+                "fromGroup": source_group,
+                "toGroup": target_group,
+                "position": group_position,
+                "applied": true,
+                "written": written,
+            }))?
+        );
+    } else {
+        println!("Moved endpoint `{}`.", store.endpoints[final_index].name);
+        println!(
+            "Destination: {} (position {}).",
+            target_group.as_deref().unwrap_or("root"),
+            group_position
         );
         println!("Applied {} managed override files.", written.len());
     }
@@ -1536,14 +2996,65 @@ struct CliCaseEditOptions {
 
 fn cli_case(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let Some(subcommand) = args.first().map(String::as_str) else {
-        return Err("case requires add, update, or delete".into());
+        return Err("case requires list, add, update, or delete".into());
     };
     match subcommand {
+        "list" | "ls" => cli_case_list(options, &args[1..]),
         "add" | "create" => cli_case_add(options, &args[1..]),
         "update" | "edit" | "set" => cli_case_update(options, &args[1..]),
         "delete" | "remove" | "rm" => cli_case_delete(options, &args[1..]),
         _ => Err(format!("unknown case command: {subcommand}").into()),
     }
+}
+
+fn cli_case_list(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    if args.len() != 1 {
+        return Err("case list requires exactly one <endpoint>".into());
+    }
+    let store = load_cli_store(options)?;
+    let endpoint_index = find_endpoint_index(&store, &args[0])?;
+    let endpoint = &store.endpoints[endpoint_index];
+    if options.json {
+        let cases = endpoint
+            .cases
+            .iter()
+            .map(|mock_case| {
+                json!({
+                    "id": mock_case.id,
+                    "name": mock_case.name,
+                    "status": mock_case.status,
+                    "headers": mock_case.headers,
+                    "body": mock_case.body,
+                    "active": endpoint.active_case_id.as_deref() == Some(mock_case.id.as_str()),
+                })
+            })
+            .collect::<Vec<_>>();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "endpointId": endpoint.id,
+                "endpointName": endpoint.name,
+                "cases": cases,
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!("Cases for `{}`:", endpoint.name);
+    for mock_case in &endpoint.cases {
+        let marker = if endpoint.active_case_id.as_deref() == Some(mock_case.id.as_str()) {
+            "*"
+        } else {
+            " "
+        };
+        println!(
+            "{marker} {}  {}  status {}",
+            short_id(&mock_case.id),
+            mock_case.name,
+            mock_case.status
+        );
+    }
+    Ok(())
 }
 
 fn cli_case_add(options: &CliOptions, args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
@@ -1983,12 +3494,12 @@ fn matching_endpoint_indices(
                 indices.extend(group_matches);
             }
             CliEndpointSelector::Matching(query) => {
-                let query_lower = query.to_lowercase();
+                let pattern = EndpointSearchPattern::Text(query.to_lowercase());
                 let text_matches = store
                     .endpoints
                     .iter()
                     .enumerate()
-                    .filter(|(_, endpoint)| endpoint_matches_query(endpoint, query, &query_lower))
+                    .filter(|(_, endpoint)| endpoint_matches_search(endpoint, &pattern))
                     .map(|(index, _)| index)
                     .collect::<Vec<_>>();
                 if text_matches.is_empty() {
@@ -1999,6 +3510,27 @@ fn matching_endpoint_indices(
         }
     }
     Ok(indices)
+}
+
+fn endpoint_matches_search(endpoint: &Endpoint, pattern: &EndpointSearchPattern) -> bool {
+    pattern.matches(&endpoint.id)
+        || pattern.matches(&endpoint.name)
+        || pattern.matches(&endpoint.method)
+        || pattern.matches(&endpoint.override_path)
+        || pattern.matches(&endpoint.description)
+        || endpoint
+            .group_path
+            .as_deref()
+            .map(|group_path| pattern.matches(group_path))
+            .unwrap_or(false)
+        || endpoint.tags.iter().any(|tag| pattern.matches(tag))
+        || endpoint.cases.iter().any(|mock_case| {
+            pattern.matches(&mock_case.id)
+                || pattern.matches(&mock_case.name)
+                || pattern.matches(&mock_case.body)
+                || pattern.matches(&mock_case.headers)
+                || pattern.matches(&mock_case.status.to_string())
+        })
 }
 
 fn find_endpoint_index(store: &Store, query: &str) -> Result<usize, Box<dyn std::error::Error>> {
@@ -2173,10 +3705,21 @@ fn default_store(default_overrides_folder: &str) -> Store {
     }
 }
 
-fn refresh_chrome_profile(store: &mut Store) {
-    let Some(state) = inspect_chrome_profile() else {
+fn refresh_chrome_profile(store: &mut Store, force_timestamp: bool) {
+    let Some(mut state) = inspect_chrome_profile() else {
         return;
     };
+    if !force_timestamp {
+        if let Some(previous) = &store.chrome_profile {
+            let profile_is_unchanged = previous.profile_name == state.profile_name
+                && previous.preferences_path == state.preferences_path
+                && previous.local_overrides_enabled == state.local_overrides_enabled
+                && previous.overrides_folder == state.overrides_folder;
+            if profile_is_unchanged {
+                state.detected_at = previous.detected_at.clone();
+            }
+        }
+    }
     if let Some(folder) = &state.overrides_folder {
         if !folder.is_empty() {
             store.overrides_folder = folder.clone();
@@ -2254,6 +3797,65 @@ fn normalized_bool(value: &Value) -> Option<bool> {
     }
 }
 
+fn lock_store(path: &Path) -> Result<File, Box<dyn std::error::Error>> {
+    ensure_parent_dir(path)?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("store.json");
+    let lock_path = path.with_file_name(format!(".{file_name}.lock"));
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_path)?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        match lock_file.try_lock_exclusive() {
+            Ok(()) => return Ok(lock_file),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Err("timed out waiting for another MockKit operation to finish".into());
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn stores_equal(
+    left: Option<&Store>,
+    right: Option<&Store>,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    Ok(match (left, right) {
+        (Some(left), Some(right)) => serde_json::to_value(left)? == serde_json::to_value(right)?,
+        (None, None) => true,
+        _ => false,
+    })
+}
+
+fn ensure_expected_store_matches(
+    path: &Path,
+    expected_store: Option<&Store>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(expected_store) = expected_store else {
+        return Ok(());
+    };
+    let mut expected_store = expected_store.clone();
+    normalize_store(&mut expected_store);
+    let current_store = read_store(path)?;
+    let current_store = current_store.map(|mut store| {
+        normalize_store(&mut store);
+        store
+    });
+    if !stores_equal(current_store.as_ref(), Some(&expected_store))? {
+        return Err("MOCKKIT_STORE_CHANGED: store changed outside this MockKit window".into());
+    }
+    Ok(())
+}
+
 fn read_store(path: &Path) -> Result<Option<Store>, Box<dyn std::error::Error>> {
     if !path.exists() {
         return Ok(None);
@@ -2266,6 +3868,13 @@ fn write_store(path: &Path, store: &Store) -> Result<(), Box<dyn std::error::Err
     ensure_parent_dir(path)?;
     let data = serde_json::to_vec_pretty(store)?;
     write_atomic(path, &data)
+}
+
+fn write_store_if_changed(path: &Path, store: &Store) -> Result<(), Box<dyn std::error::Error>> {
+    if stores_equal(read_store(path)?.as_ref(), Some(store))? {
+        return Ok(());
+    }
+    write_store(path, store)
 }
 
 fn write_atomic(path: &Path, data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
@@ -4594,16 +6203,15 @@ fn normalize_store(store: &mut Store) {
             settings.language = Some("zh-CN".to_string());
         }
     }
-    let mut group_paths = store
+    let mut seen_group_paths = HashSet::new();
+    let group_paths = store
         .group_paths
         .take()
         .unwrap_or_default()
         .into_iter()
         .map(|path| sanitized_relative_path(&path))
-        .filter(|path| !path.is_empty())
+        .filter(|path| !path.is_empty() && seen_group_paths.insert(path.clone()))
         .collect::<Vec<_>>();
-    group_paths.sort();
-    group_paths.dedup();
     store.group_paths = Some(group_paths);
     normalize_duplicate_endpoints(store);
     for endpoint in &mut store.endpoints {
@@ -4964,6 +6572,23 @@ mod tests {
     }
 
     #[test]
+    fn normalize_store_preserves_manual_group_order() {
+        let mut store = default_store("");
+        store.group_paths = Some(vec![
+            "区域管理".to_string(),
+            "用户中心".to_string(),
+            "区域管理".to_string(),
+        ]);
+
+        normalize_store(&mut store);
+
+        assert_eq!(
+            store.group_paths,
+            Some(vec!["区域管理".to_string(), "用户中心".to_string()])
+        );
+    }
+
+    #[test]
     fn import_curl_uses_url_as_new_endpoint_name() {
         let mut store = default_store("");
         import_curl(
@@ -5121,5 +6746,338 @@ mod tests {
             persisted_overrides.to_string_lossy()
         );
         assert!(!reloaded.mock_enabled);
+    }
+
+    #[test]
+    fn cli_endpoint_and_group_commands_cover_crud_workflow() {
+        let directory = TestDirectory::new();
+        let store_path = directory.0.join("store.json");
+        let overrides = directory.0.join("Overrides");
+        write_store(&store_path, &default_store(&overrides.to_string_lossy()))
+            .expect("store should be written");
+        let options = CliOptions {
+            store_path: store_path.clone(),
+            overrides_folder: Some(overrides.to_string_lossy().to_string()),
+            migrate_legacy: false,
+            json: true,
+        };
+
+        cli_group(&options, &["add".to_string(), "团队/API".to_string()])
+            .expect("nested group should be created");
+        cli_endpoint(
+            &options,
+            &[
+                "add".to_string(),
+                "example.com/api/users".to_string(),
+                "--name".to_string(),
+                "用户列表".to_string(),
+                "--method".to_string(),
+                "post".to_string(),
+                "--group".to_string(),
+                "团队/API".to_string(),
+                "--body".to_string(),
+                r#"{"users":[]}"#.to_string(),
+                "--status".to_string(),
+                "201".to_string(),
+            ],
+        )
+        .expect("endpoint should be created");
+
+        let created = read_store(&store_path)
+            .expect("store should be readable")
+            .expect("store should exist");
+        assert_eq!(
+            created.group_paths,
+            Some(vec!["团队".to_string(), "团队/API".to_string()])
+        );
+        assert_eq!(created.endpoints.len(), 1);
+        assert_eq!(created.endpoints[0].name, "用户列表");
+        assert_eq!(created.endpoints[0].method, "POST");
+        assert_eq!(created.endpoints[0].group_path.as_deref(), Some("团队/API"));
+        assert_eq!(created.endpoints[0].cases[0].body, r#"{"users":[]}"#);
+        assert_eq!(created.endpoints[0].cases[0].status, 201);
+        assert!(overrides.join("example.com/api/users").is_file());
+
+        cli_group(
+            &options,
+            &["rename".to_string(), "团队".to_string(), "平台".to_string()],
+        )
+        .expect("group tree should be renamed");
+        let renamed = read_store(&store_path)
+            .expect("store should be readable")
+            .expect("store should exist");
+        assert_eq!(
+            renamed.group_paths,
+            Some(vec!["平台".to_string(), "平台/API".to_string()])
+        );
+        assert_eq!(renamed.endpoints[0].group_path.as_deref(), Some("平台/API"));
+
+        cli_group(
+            &options,
+            &[
+                "delete".to_string(),
+                "平台".to_string(),
+                "--yes".to_string(),
+            ],
+        )
+        .expect("group tree and endpoint should be deleted");
+        let deleted = read_store(&store_path)
+            .expect("store should be readable")
+            .expect("store should exist");
+        assert_eq!(deleted.group_paths, Some(vec![]));
+        assert!(deleted.endpoints.is_empty());
+        assert!(!overrides.join("example.com/api/users").exists());
+    }
+
+    #[test]
+    fn endpoint_add_rejects_file_directory_path_conflicts_before_saving() {
+        let directory = TestDirectory::new();
+        let store_path = directory.0.join("store.json");
+        let overrides = directory.0.join("Overrides");
+        let mut store = default_store(&overrides.to_string_lossy());
+        store.endpoints = vec![test_endpoint("stock", "example.com/api/stock", "body")];
+        write_store(&store_path, &store).expect("store should be written");
+        let options = CliOptions {
+            store_path: store_path.clone(),
+            overrides_folder: Some(overrides.to_string_lossy().to_string()),
+            migrate_legacy: false,
+            json: true,
+        };
+
+        let error = cli_endpoint(
+            &options,
+            &[
+                "add".to_string(),
+                "example.com/api/stock/detail".to_string(),
+            ],
+        )
+        .expect_err("file/directory path conflict should be rejected");
+        assert_eq!(
+            error.to_string(),
+            "endpoint path conflicts with existing override path: example.com/api/stock"
+        );
+        let unchanged = read_store(&store_path)
+            .expect("store should be readable")
+            .expect("store should exist");
+        assert_eq!(unchanged.endpoints.len(), 1);
+    }
+
+    #[test]
+    fn expected_store_rejects_a_stale_writer() {
+        let directory = TestDirectory::new();
+        let store_path = directory.0.join("store.json");
+        let expected_store = default_store("mock");
+        write_store(&store_path, &expected_store).expect("store should be written");
+
+        let mut externally_changed_store = expected_store.clone();
+        externally_changed_store.endpoints = vec![test_endpoint(
+            "external",
+            "example.com/api/external",
+            "external",
+        )];
+        write_store(&store_path, &externally_changed_store)
+            .expect("external store change should be written");
+
+        let error = ensure_expected_store_matches(&store_path, Some(&expected_store))
+            .expect_err("stale expected store should be rejected");
+        assert!(error.to_string().starts_with("MOCKKIT_STORE_CHANGED:"));
+        assert_eq!(
+            read_store(&store_path)
+                .expect("store should be readable")
+                .expect("store should exist")
+                .endpoints
+                .len(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unchanged_store_is_not_rewritten() {
+        use std::os::unix::fs::MetadataExt;
+
+        let directory = TestDirectory::new();
+        let store_path = directory.0.join("store.json");
+        let store = default_store("mock");
+        write_store(&store_path, &store).expect("store should be written");
+        let inode_before = fs::metadata(&store_path)
+            .expect("store metadata should be readable")
+            .ino();
+
+        write_store_if_changed(&store_path, &store).expect("no-op save should succeed");
+
+        let inode_after = fs::metadata(&store_path)
+            .expect("store metadata should be readable")
+            .ino();
+        assert_eq!(inode_before, inode_after);
+    }
+
+    #[test]
+    fn store_lock_serializes_writers() {
+        let directory = TestDirectory::new();
+        let store_path = directory.0.join("store.json");
+        let first_lock = lock_store(&store_path).expect("first writer should acquire the lock");
+        let second_store_path = store_path.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let writer = thread::spawn(move || {
+            let second_lock = lock_store(&second_store_path)
+                .expect("second writer should acquire the released lock");
+            sender.send(()).expect("test result should be delivered");
+            drop(second_lock);
+        });
+
+        assert!(receiver.recv_timeout(Duration::from_millis(80)).is_err());
+        drop(first_lock);
+        receiver
+            .recv_timeout(Duration::from_secs(2))
+            .expect("second writer should continue after the lock is released");
+        writer.join().expect("writer thread should finish");
+    }
+
+    #[test]
+    fn endpoint_search_covers_metadata_and_response_cases() {
+        let mut endpoint = test_endpoint("payment", "example.com/api/plain", "body needle");
+        endpoint.name = "Payment Search Target".to_string();
+        endpoint.description = "description needle".to_string();
+        endpoint.tags = vec!["billing".to_string()];
+        endpoint.cases[0].headers = "X-Mock: header-needle".to_string();
+
+        for query in [
+            "payment search",
+            "description needle",
+            "body needle",
+            "billing",
+            "header-needle",
+        ] {
+            assert!(endpoint_matches_search(
+                &endpoint,
+                &EndpointSearchPattern::Text(query.to_string())
+            ));
+        }
+        let regex = endpoint_search_pattern(Some(r"PAYMENT\s+SEARCH"), true)
+            .expect("regex should compile")
+            .expect("pattern should exist");
+        assert!(endpoint_matches_search(&endpoint, &regex));
+    }
+
+    #[test]
+    fn global_mock_toggle_preserves_individual_endpoint_states() {
+        let directory = TestDirectory::new();
+        let store_path = directory.0.join("store.json");
+        let overrides = directory.0.join("Overrides");
+        let mut store = default_store(&overrides.to_string_lossy());
+        let mut enabled = test_endpoint("enabled", "example.com/enabled", "enabled");
+        enabled.enabled = Some(true);
+        let mut disabled = test_endpoint("disabled", "example.com/disabled", "disabled");
+        disabled.enabled = Some(false);
+        store.endpoints = vec![enabled, disabled];
+        write_store(&store_path, &store).expect("store should be written");
+        let options = CliOptions {
+            store_path: store_path.clone(),
+            overrides_folder: Some(overrides.to_string_lossy().to_string()),
+            migrate_legacy: false,
+            json: true,
+        };
+
+        cli_set_global_mock(&options, false).expect("global mock should disable");
+        cli_set_global_mock(&options, true).expect("global mock should enable");
+
+        let reloaded = read_store(&store_path)
+            .expect("store should be readable")
+            .expect("store should exist");
+        assert!(reloaded.mock_enabled);
+        assert_eq!(
+            reloaded
+                .endpoints
+                .iter()
+                .map(|endpoint| endpoint.enabled)
+                .collect::<Vec<_>>(),
+            vec![Some(true), Some(false)]
+        );
+    }
+
+    #[test]
+    fn endpoint_move_changes_group_and_order() {
+        let directory = TestDirectory::new();
+        let store_path = directory.0.join("store.json");
+        let overrides = directory.0.join("Overrides");
+        let mut store = default_store(&overrides.to_string_lossy());
+        store.group_paths = Some(vec!["A".to_string(), "B".to_string()]);
+        let mut first = test_endpoint("first", "example.com/first", "first");
+        first.group_path = Some("A".to_string());
+        let mut second = test_endpoint("second", "example.com/second", "second");
+        second.group_path = Some("B".to_string());
+        let mut third = test_endpoint("third", "example.com/third", "third");
+        third.group_path = Some("B".to_string());
+        store.endpoints = vec![first, second, third];
+        write_store(&store_path, &store).expect("store should be written");
+        let options = CliOptions {
+            store_path: store_path.clone(),
+            overrides_folder: Some(overrides.to_string_lossy().to_string()),
+            migrate_legacy: false,
+            json: true,
+        };
+
+        cli_endpoint_move(
+            &options,
+            &[
+                "first".to_string(),
+                "--before".to_string(),
+                "third".to_string(),
+            ],
+        )
+        .expect("endpoint should move before the target");
+
+        let reloaded = read_store(&store_path)
+            .expect("store should be readable")
+            .expect("store should exist");
+        assert_eq!(
+            reloaded
+                .endpoints
+                .iter()
+                .map(|endpoint| endpoint.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["second", "first", "third"]
+        );
+        assert_eq!(reloaded.endpoints[1].group_path.as_deref(), Some("B"));
+    }
+
+    #[test]
+    fn group_reorder_moves_the_whole_subtree() {
+        let directory = TestDirectory::new();
+        let store_path = directory.0.join("store.json");
+        let mut store = default_store("mock");
+        store.group_paths = Some(vec![
+            "A".to_string(),
+            "A/Child".to_string(),
+            "B".to_string(),
+            "C".to_string(),
+        ]);
+        write_store(&store_path, &store).expect("store should be written");
+        let options = CliOptions {
+            store_path: store_path.clone(),
+            overrides_folder: None,
+            migrate_legacy: false,
+            json: true,
+        };
+
+        cli_group_reorder(
+            &options,
+            &["A".to_string(), "--after".to_string(), "C".to_string()],
+        )
+        .expect("group subtree should move after C");
+
+        let reloaded = read_store(&store_path)
+            .expect("store should be readable")
+            .expect("store should exist");
+        assert_eq!(
+            reloaded.group_paths,
+            Some(vec![
+                "B".to_string(),
+                "C".to_string(),
+                "A".to_string(),
+                "A/Child".to_string(),
+            ])
+        );
     }
 }

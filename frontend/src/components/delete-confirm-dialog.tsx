@@ -1,5 +1,4 @@
 import { Button } from "@/components/ui/button";
-import { FileJson, FolderClosed, Trash2 } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -8,6 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { FileJson, FolderClosed, Trash2 } from "lucide-react";
 import type { AppMessages } from "../i18n";
 
 export type DeleteDialogTarget =

@@ -12,6 +12,8 @@ name = "mockkit"
 path = "src/bin/mockkit.rs"
 
 [dependencies]
+fs2 = "0.4"
+regex = "1.11"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

@@ -198,6 +198,7 @@ struct CoreRequest: Codable {
     var defaultOverridesFolder: String?
     var legacyStorePaths: [String]?
     var store: Store?
+    var expectedStore: Store?
     var curl: String?
     var fetchResponse: Bool?
     var aiRequest: AiMockRequestPayload?
@@ -210,6 +211,7 @@ struct CoreRequest: Codable {
         defaultOverridesFolder: String? = nil,
         legacyStorePaths: [String]? = nil,
         store: Store? = nil,
+        expectedStore: Store? = nil,
         curl: String? = nil,
         fetchResponse: Bool? = nil,
         aiRequest: AiMockRequestPayload? = nil,
@@ -221,6 +223,7 @@ struct CoreRequest: Codable {
         self.defaultOverridesFolder = defaultOverridesFolder
         self.legacyStorePaths = legacyStorePaths
         self.store = store
+        self.expectedStore = expectedStore
         self.curl = curl
         self.fetchResponse = fetchResponse
         self.aiRequest = aiRequest
@@ -393,28 +396,74 @@ final class RustCoreClient {
         ))
     }
 
-    func save(store: Store, storePath: URL) throws -> CoreResponse {
-        try run(CoreRequest(command: "save", storePath: storePath.path, defaultOverridesFolder: nil, legacyStorePaths: nil, store: store))
+    func save(store: Store, storePath: URL, expectedStore: Store? = nil) throws -> CoreResponse {
+        try run(CoreRequest(
+            command: "save",
+            storePath: storePath.path,
+            defaultOverridesFolder: nil,
+            legacyStorePaths: nil,
+            store: store,
+            expectedStore: expectedStore
+        ))
     }
 
-    func sync(store: Store, storePath: URL) throws -> CoreResponse {
-        try run(CoreRequest(command: "sync", storePath: storePath.path, defaultOverridesFolder: nil, legacyStorePaths: nil, store: store))
+    func sync(store: Store, storePath: URL, expectedStore: Store) throws -> CoreResponse {
+        try run(CoreRequest(
+            command: "sync",
+            storePath: storePath.path,
+            defaultOverridesFolder: nil,
+            legacyStorePaths: nil,
+            store: store,
+            expectedStore: expectedStore
+        ))
     }
 
-    func apply(store: Store, storePath: URL) throws -> CoreResponse {
-        try run(CoreRequest(command: "apply", storePath: storePath.path, defaultOverridesFolder: nil, legacyStorePaths: nil, store: store))
+    func apply(store: Store, storePath: URL, expectedStore: Store) throws -> CoreResponse {
+        try run(CoreRequest(
+            command: "apply",
+            storePath: storePath.path,
+            defaultOverridesFolder: nil,
+            legacyStorePaths: nil,
+            store: store,
+            expectedStore: expectedStore
+        ))
     }
 
-    func disable(store: Store, storePath: URL) throws -> CoreResponse {
-        try run(CoreRequest(command: "disable", storePath: storePath.path, defaultOverridesFolder: nil, legacyStorePaths: nil, store: store))
+    func disable(store: Store, storePath: URL, expectedStore: Store) throws -> CoreResponse {
+        try run(CoreRequest(
+            command: "disable",
+            storePath: storePath.path,
+            defaultOverridesFolder: nil,
+            legacyStorePaths: nil,
+            store: store,
+            expectedStore: expectedStore
+        ))
     }
 
-    func refreshChromeProfile(store: Store, storePath: URL) throws -> CoreResponse {
-        try run(CoreRequest(command: "refreshChromeProfile", storePath: storePath.path, store: store))
+    func refreshChromeProfile(store: Store, storePath: URL, expectedStore: Store) throws -> CoreResponse {
+        try run(CoreRequest(
+            command: "refreshChromeProfile",
+            storePath: storePath.path,
+            store: store,
+            expectedStore: expectedStore
+        ))
     }
 
-    func importCurl(store: Store, storePath: URL, curl: String, fetchResponse: Bool) throws -> CoreResponse {
-        try run(CoreRequest(command: "importCurl", storePath: storePath.path, store: store, curl: curl, fetchResponse: fetchResponse))
+    func importCurl(
+        store: Store,
+        storePath: URL,
+        expectedStore: Store,
+        curl: String,
+        fetchResponse: Bool
+    ) throws -> CoreResponse {
+        try run(CoreRequest(
+            command: "importCurl",
+            storePath: storePath.path,
+            store: store,
+            expectedStore: expectedStore,
+            curl: curl,
+            fetchResponse: fetchResponse
+        ))
     }
 
     func generateAiMock(
@@ -615,8 +664,12 @@ final class StoreController {
         try? storeURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }
 
-    func refreshChromeProfile(store: inout Store) throws {
-        let result = try core.refreshChromeProfile(store: store, storePath: storeURL)
+    func refreshChromeProfile(store: inout Store, expectedStore: Store) throws {
+        let result = try core.refreshChromeProfile(
+            store: store,
+            storePath: storeURL,
+            expectedStore: expectedStore
+        )
         if let nextStore = result.store {
             store = nextStore
         }
@@ -630,35 +683,46 @@ final class StoreController {
         }
     }
 
-    func saveNormalized(store: inout Store) throws {
-        let result = try core.save(store: store, storePath: storeURL)
+    func saveNormalized(store: inout Store, expectedStore: Store) throws {
+        let result = try core.save(store: store, storePath: storeURL, expectedStore: expectedStore)
         if let nextStore = result.store {
             store = nextStore
         }
     }
 
-    func syncOverrides(store: inout Store) throws -> (imported: [String], updated: Int) {
-        let result = try core.sync(store: store, storePath: storeURL)
+    func syncOverrides(store: inout Store, expectedStore: Store) throws -> (imported: [String], updated: Int) {
+        let result = try core.sync(store: store, storePath: storeURL, expectedStore: expectedStore)
         if let nextStore = result.store {
             store = nextStore
         }
         return (result.imported, result.updated)
     }
 
-    func apply(store: Store) throws -> [String] {
-        let result = try core.apply(store: store, storePath: storeURL)
+    func apply(store: Store, expectedStore: Store) throws -> [String] {
+        let result = try core.apply(store: store, storePath: storeURL, expectedStore: expectedStore)
         return result.written
     }
 
-    func disable(store: inout Store) throws {
-        let result = try core.disable(store: store, storePath: storeURL)
+    func disable(store: inout Store, expectedStore: Store) throws {
+        let result = try core.disable(store: store, storePath: storeURL, expectedStore: expectedStore)
         if let nextStore = result.store {
             store = nextStore
         }
     }
 
-    func importCurl(store: inout Store, curl: String, fetchResponse: Bool) throws -> CoreResponse {
-        let result = try core.importCurl(store: store, storePath: storeURL, curl: curl, fetchResponse: fetchResponse)
+    func importCurl(
+        store: inout Store,
+        expectedStore: Store,
+        curl: String,
+        fetchResponse: Bool
+    ) throws -> CoreResponse {
+        let result = try core.importCurl(
+            store: store,
+            storePath: storeURL,
+            expectedStore: expectedStore,
+            curl: curl,
+            fetchResponse: fetchResponse
+        )
         if let nextStore = result.store {
             store = nextStore
         }
@@ -816,8 +880,12 @@ final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSession
             case "saveStore":
                 try saveStore(payload["store"])
             case "scan":
-                var nextStore = store
-                let result = try storeController.syncOverrides(store: &nextStore)
+                let expectedStore = store
+                var nextStore = expectedStore
+                let result = try storeController.syncOverrides(
+                    store: &nextStore,
+                    expectedStore: expectedStore
+                )
                 store = nextStore
                 lastKnownStoreModificationDate = storeController.storeModificationDate()
                 sendResult(message: "已同步：新增 \(result.imported.count) 个，更新 \(result.updated) 个。")
@@ -826,18 +894,23 @@ final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSession
                 let changedOutsideApp = currentModificationDate != nil
                     && currentModificationDate != lastKnownStoreModificationDate
                 var nextStore = changedOutsideApp ? storeController.load() : store
-                let result = try storeController.syncOverrides(store: &nextStore)
+                let expectedStore = nextStore
+                let result = try storeController.syncOverrides(
+                    store: &nextStore,
+                    expectedStore: expectedStore
+                )
                 store = nextStore
                 lastKnownStoreModificationDate = storeController.storeModificationDate()
                 if changedOutsideApp || !result.imported.isEmpty || result.updated > 0 {
                     sendState()
                 }
             case "apply":
-                let written = try storeController.apply(store: store)
+                let written = try storeController.apply(store: store, expectedStore: store)
                 sendResult(message: "已应用 \(written.count) 个托管 Override 文件。")
             case "disable":
-                var nextStore = store
-                try storeController.disable(store: &nextStore)
+                let expectedStore = store
+                var nextStore = expectedStore
+                try storeController.disable(store: &nextStore, expectedStore: expectedStore)
                 store = nextStore
                 lastKnownStoreModificationDate = storeController.storeModificationDate()
                 sendResult(message: "Mock 已禁用，托管文件已移除。")
@@ -852,8 +925,12 @@ final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSession
                 }
                 NSWorkspace.shared.open(url)
             case "refreshChromeProfile":
-                var nextStore = store
-                try storeController.refreshChromeProfile(store: &nextStore)
+                let expectedStore = store
+                var nextStore = expectedStore
+                try storeController.refreshChromeProfile(
+                    store: &nextStore,
+                    expectedStore: expectedStore
+                )
                 store = nextStore
                 lastKnownStoreModificationDate = storeController.storeModificationDate()
                 sendResult(message: "已重新检测 Chrome Profile。")
@@ -897,7 +974,7 @@ final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSession
                 sendError("未知命令：\(command)")
             }
         } catch {
-            sendError(error.localizedDescription)
+            handleOperationError(error)
         }
     }
 
@@ -1493,6 +1570,7 @@ final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSession
                 var nextStore = storeSnapshot
                 let result = try backgroundStoreController.importCurl(
                     store: &nextStore,
+                    expectedStore: storeSnapshot,
                     curl: curl,
                     fetchResponse: fetchResponse
                 )
@@ -1511,7 +1589,7 @@ final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSession
                 }
             } catch {
                 DispatchQueue.main.async { [weak self] in
-                    self?.sendState(error: error.localizedDescription)
+                    self?.handleOperationError(error)
                 }
             }
         }
@@ -1553,14 +1631,14 @@ final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSession
         if nextStore.aiSettings?.enabled == nil {
             nextStore.aiSettings?.enabled = requestedAiEnabled ?? false
         }
-        try storeController.saveNormalized(store: &nextStore)
+        try storeController.saveNormalized(store: &nextStore, expectedStore: store)
         if let requestedAiEnabled {
             if nextStore.aiSettings == nil {
                 nextStore.aiSettings = storeController.defaultAiSettings()
             }
             nextStore.aiSettings?.enabled = requestedAiEnabled
         }
-        _ = try storeController.apply(store: nextStore)
+        _ = try storeController.apply(store: nextStore, expectedStore: nextStore)
         store = nextStore
         lastKnownStoreModificationDate = storeController.storeModificationDate()
         if previousLanguage != store.uiSettings?.language {
@@ -1659,12 +1737,23 @@ final class Bridge: NSObject, WKScriptMessageHandler, @preconcurrency URLSession
     }
 
     private func sendResult(message: String) {
-        storeController.save(store)
         sendState(message: message)
     }
 
     private func sendError(_ error: String) {
         sendState(error: error)
+    }
+
+    private func handleOperationError(_ error: Error) {
+        let message = error.localizedDescription
+        guard message.hasPrefix("MOCKKIT_STORE_CHANGED:") else {
+            sendError(message)
+            return
+        }
+        pendingStorePayload = nil
+        store = storeController.load()
+        lastKnownStoreModificationDate = storeController.storeModificationDate()
+        sendState(error: "数据已被另一个 MockKit 窗口或 CLI 修改，界面已刷新，请重试刚才的操作。")
     }
 
     private func dictionary<T: Encodable>(from value: T) -> Any {

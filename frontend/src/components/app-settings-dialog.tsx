@@ -186,6 +186,29 @@ const cliCommandsZh: CliCommand[] = [
     example: "",
   },
   {
+    command: "mockkit search <query> [filters]",
+    description: "搜索接口元数据和所有返回场景，并可继续按目录、方法或启用状态过滤。",
+    params: [
+      { name: "<query>", description: "名称、方法、路径、说明、分组、标签或场景内容" },
+      { name: "--regex", description: "使用不区分大小写的正则表达式" },
+      { name: "--group <path>", description: "只查看分组及其子分组" },
+      { name: "--method <method>", description: "只查看指定 HTTP 方法" },
+      { name: "--enabled <on|off>", description: "只查看启用或禁用的接口" },
+    ],
+    example: 'mockkit search "users" --method GET --enabled on',
+  },
+  {
+    command: "mockkit endpoint add <path> [options]",
+    description: "创建接口和初始返回场景，并立即写入 Overrides。",
+    params: [
+      { name: "<path>", description: "Chrome Override 相对路径" },
+      { name: "--name <text>", description: "接口名称" },
+      { name: "--group <path>", description: "放入指定分组" },
+      { name: "--body <text>", description: "设置初始响应内容" },
+    ],
+    example: 'mockkit endpoint add "example.com/api/users" --name "用户列表" --group "用户中心"',
+  },
+  {
     command: "mockkit show <endpoint> [case]",
     description: "查看某个接口/场景的详情和完整 Mock 内容，适合复制给 AI。",
     params: [
@@ -213,7 +236,7 @@ const cliCommandsZh: CliCommand[] = [
     params: [
       { name: "<endpoint...>", description: "一个或多个短 ID、接口名称或路径片段" },
       { name: "--group <path>", description: "删除分组及子分组中的接口" },
-      { name: "--matching <text>", description: "按名称、路径、分组或标签批量匹配" },
+      { name: "--matching <text>", description: "搜索接口信息和场景内容并批量匹配" },
       { name: "--dry-run", description: "仅预览命中结果" },
       { name: "--yes", description: "跳过交互确认" },
     ],
@@ -246,6 +269,37 @@ const cliCommandsZh: CliCommand[] = [
       { name: "--description <text>", description: "设置接口说明" },
     ],
     example: 'mockkit edit "example.com/api/users" --name "用户列表" --description "分页返回用户。"',
+  },
+  {
+    command: "mockkit endpoint move <endpoint> [ordering]",
+    description: "移动接口到其他分组，或调整它在分组中的顺序。",
+    params: [
+      { name: "--group <path> / --root", description: "设置目标分组或根目录" },
+      { name: "--before / --after <endpoint>", description: "移动到另一个接口前面或后面" },
+      { name: "--first / --last", description: "移动到目标分组开头或末尾" },
+    ],
+    example: 'mockkit endpoint move "用户列表" --group "用户中心" --first',
+  },
+  {
+    command: "mockkit group add <path>",
+    description: "创建分组；缺少的上级分组会一起创建。",
+    params: [{ name: "<path>", description: "支持多级路径，例如 用户中心/账户" }],
+    example: 'mockkit group add "用户中心/账户"',
+  },
+  {
+    command: "mockkit group reorder <path> [ordering]",
+    description: "调整目录在同级目录中的顺序，整个子目录树会一起移动。",
+    params: [
+      { name: "--before / --after <sibling>", description: "移动到同级目录前面或后面" },
+      { name: "--first / --last", description: "移动到同级目录开头或末尾" },
+    ],
+    example: 'mockkit group reorder "用户中心" --before "订单中心"',
+  },
+  {
+    command: "mockkit case list <endpoint>",
+    description: "列出接口的全部返回场景，并标出当前正在使用的场景。",
+    params: [{ name: "<endpoint>", description: "接口短 ID、名称或路径片段" }],
+    example: 'mockkit case list "example.com/api/users"',
   },
   {
     command: "mockkit case add <endpoint> [options]",
@@ -283,9 +337,15 @@ const cliCommandsZh: CliCommand[] = [
   },
   {
     command: "mockkit disable <endpoint...>",
-    description: "禁用一个或多个接口；不带参数的 mockkit disable 会关闭全部 Mock。",
+    description: "禁用一个或多个接口；不带参数时只关闭全局 Mock，并保留单接口状态。",
     params: [{ name: "<endpoint...>", description: "一个或多个短 ID、接口名称或路径片段" }],
     example: 'mockkit disable "example.com/api/users"',
+  },
+  {
+    command: "mockkit enable",
+    description: "重新打开全局 Mock，并保留每个接口原来的启用或禁用状态。",
+    params: [{ name: "--all", description: "同时启用所有接口" }],
+    example: "",
   },
   {
     command: "mockkit disable --group <path>",
@@ -295,7 +355,7 @@ const cliCommandsZh: CliCommand[] = [
   },
   {
     command: "mockkit enable --matching <text>",
-    description: "按名称、路径、分组或标签批量启用匹配到的接口。",
+    description: "搜索接口信息和场景内容，并批量启用匹配到的接口。",
     params: [{ name: "--matching <text>", description: "用于匹配接口的文本" }],
     example: 'mockkit enable --matching "users"',
   },
@@ -313,6 +373,30 @@ const cliCommandsEn: CliCommand[] = [
     description: "List endpoint short IDs, enabled state, active case, and full path.",
     params: [],
     example: "",
+  },
+  {
+    command: "mockkit search <query> [filters]",
+    description:
+      "Search endpoint metadata and every response case, with optional group, method, and state filters.",
+    params: [
+      { name: "<query>", description: "Name, method, path, description, group, tag, or case content" },
+      { name: "--regex", description: "Use a case-insensitive regular expression" },
+      { name: "--group <path>", description: "Limit results to a group and its descendants" },
+      { name: "--method <method>", description: "Limit results to an HTTP method" },
+      { name: "--enabled <on|off>", description: "Limit results by endpoint state" },
+    ],
+    example: 'mockkit search "users" --method GET --enabled on',
+  },
+  {
+    command: "mockkit endpoint add <path> [options]",
+    description: "Create an endpoint and initial response case, then apply it immediately.",
+    params: [
+      { name: "<path>", description: "Chrome Override relative path" },
+      { name: "--name <text>", description: "Endpoint name" },
+      { name: "--group <path>", description: "Place it in a group" },
+      { name: "--body <text>", description: "Set the initial response body" },
+    ],
+    example: 'mockkit endpoint add "example.com/api/users" --name "User list" --group "Users"',
   },
   {
     command: "mockkit show <endpoint> [case]",
@@ -342,7 +426,7 @@ const cliCommandsEn: CliCommand[] = [
     params: [
       { name: "<endpoint...>", description: "One or more short IDs, endpoint names, or path fragments" },
       { name: "--group <path>", description: "Delete endpoints in a group and nested groups" },
-      { name: "--matching <text>", description: "Match by name, path, group, or tag" },
+      { name: "--matching <text>", description: "Search endpoint details and case content" },
       { name: "--dry-run", description: "Preview matches without deleting" },
       { name: "--yes", description: "Skip the interactive confirmation" },
     ],
@@ -376,6 +460,37 @@ const cliCommandsEn: CliCommand[] = [
     ],
     example:
       'mockkit edit "example.com/api/users" --name "User list" --description "Returns paginated users."',
+  },
+  {
+    command: "mockkit endpoint move <endpoint> [ordering]",
+    description: "Move an endpoint to another group or change its order within a group.",
+    params: [
+      { name: "--group <path> / --root", description: "Set the destination group or root" },
+      { name: "--before / --after <endpoint>", description: "Place it before or after another endpoint" },
+      { name: "--first / --last", description: "Place it first or last in the destination" },
+    ],
+    example: 'mockkit endpoint move "User list" --group "Users" --first',
+  },
+  {
+    command: "mockkit group add <path>",
+    description: "Create a group and any missing parent groups.",
+    params: [{ name: "<path>", description: "A nested path such as Users/Accounts" }],
+    example: 'mockkit group add "Users/Accounts"',
+  },
+  {
+    command: "mockkit group reorder <path> [ordering]",
+    description: "Reorder a group among its siblings; its whole subtree moves with it.",
+    params: [
+      { name: "--before / --after <sibling>", description: "Place it before or after a sibling group" },
+      { name: "--first / --last", description: "Place it first or last among siblings" },
+    ],
+    example: 'mockkit group reorder "Users" --before "Orders"',
+  },
+  {
+    command: "mockkit case list <endpoint>",
+    description: "List every response case and mark the currently active case.",
+    params: [{ name: "<endpoint>", description: "Endpoint short ID, name, or path fragment" }],
+    example: 'mockkit case list "example.com/api/users"',
   },
   {
     command: "mockkit case add <endpoint> [options]",
@@ -413,11 +528,18 @@ const cliCommandsEn: CliCommand[] = [
   },
   {
     command: "mockkit disable <endpoint...>",
-    description: "Disable one or more endpoints; without arguments, mockkit disable turns off all mocks.",
+    description:
+      "Disable endpoints; without arguments, only the global switch is turned off and endpoint states are preserved.",
     params: [
       { name: "<endpoint...>", description: "One or more short IDs, endpoint names, or path fragments" },
     ],
     example: 'mockkit disable "example.com/api/users"',
+  },
+  {
+    command: "mockkit enable",
+    description: "Turn the global Mock switch back on while preserving individual endpoint states.",
+    params: [{ name: "--all", description: "Also enable every endpoint" }],
+    example: "",
   },
   {
     command: "mockkit disable --group <path>",
@@ -427,7 +549,7 @@ const cliCommandsEn: CliCommand[] = [
   },
   {
     command: "mockkit enable --matching <text>",
-    description: "Enable endpoints that match by name, path, group, or tag.",
+    description: "Search endpoint details and case content, then enable every match.",
     params: [{ name: "--matching <text>", description: "Text used to match endpoints" }],
     example: 'mockkit enable --matching "users"',
   },

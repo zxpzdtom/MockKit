@@ -11,14 +11,50 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { FileSearch2, Plus, Search } from "lucide-react";
-import type { MouseEvent as ReactMouseEvent } from "react";
+import { FileSearch2, GripVertical, Plus, Search } from "lucide-react";
+import { useState } from "react";
+import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from "react";
 import { toast as sonnerToast } from "sonner";
 import type { AppMessages } from "../i18n";
 import type { Endpoint, EndpointSearchMatch } from "../types";
 
 const endpointRowBadgeClass =
   "col-start-2 row-span-2 row-start-1 w-max max-w-28 justify-self-end truncate rounded-full bg-[var(--accent-soft)] px-[7px] py-0.5 text-[11px] font-[620] text-[var(--accent)]";
+
+export type EndpointDropPlacement = "before" | "after";
+
+interface EndpointDropTarget {
+  endpointId: string;
+  placement: EndpointDropPlacement;
+}
+
+function isNoopEndpointDrop(
+  endpointIds: string[],
+  sourceEndpointId: string,
+  targetEndpointId: string,
+  placement: EndpointDropPlacement,
+) {
+  const sourceIndex = endpointIds.indexOf(sourceEndpointId);
+  const originalTargetIndex = endpointIds.indexOf(targetEndpointId);
+  if (sourceIndex === -1 || originalTargetIndex === -1) return true;
+  const targetIndex = originalTargetIndex - (sourceIndex < originalTargetIndex ? 1 : 0);
+  const insertionIndex = targetIndex + (placement === "after" ? 1 : 0);
+  return insertionIndex === sourceIndex;
+}
+
+function createEndpointDragPreview(source: HTMLElement) {
+  const sourceRow = source.closest<HTMLElement>(".row");
+  if (!sourceRow) return null;
+  const preview = sourceRow.cloneNode(true) as HTMLElement;
+  const bounds = sourceRow.getBoundingClientRect();
+  preview.classList.remove("endpoint-dragging", "endpoint-drop-before", "endpoint-drop-after");
+  preview.classList.add("endpoint-drag-preview");
+  preview.setAttribute("aria-hidden", "true");
+  preview.style.width = `${bounds.width}px`;
+  for (const element of preview.querySelectorAll("[id]")) element.removeAttribute("id");
+  document.body.appendChild(preview);
+  return preview;
+}
 
 function activeCase(endpoint: Endpoint) {
   return endpoint.cases.find((item) => item.id === endpoint.activeCaseId) ?? endpoint.cases[0] ?? null;
@@ -35,12 +71,19 @@ interface EndpointListPanelProps {
   onClearSelection(): void;
   onDeleteSelectedEndpoints(): void;
   onEndpointRowClick(endpoint: Endpoint, event: ReactMouseEvent<HTMLButtonElement>): void;
+  onEndpointDragEnd(): void;
+  onEndpointDragStart(endpointId: string): void;
   onEndpointSelectionGesture(
     endpointId: string,
     event: ReactMouseEvent<HTMLElement>,
     selected: boolean,
   ): void;
   onPrepareEndpointContextMenu(endpoint: Endpoint): void;
+  onReorderEndpoint(
+    sourceEndpointId: string,
+    targetEndpointId: string,
+    placement: EndpointDropPlacement,
+  ): void;
   onQueryChange(value: string): void;
   onRegexEnabledChange(value: boolean | ((enabled: boolean) => boolean)): void;
   onRequestDeleteEndpoint(endpoint: Endpoint): void;
@@ -66,8 +109,11 @@ export function EndpointListPanel({
   onClearSelection,
   onDeleteSelectedEndpoints,
   onEndpointRowClick,
+  onEndpointDragEnd,
+  onEndpointDragStart,
   onEndpointSelectionGesture,
   onPrepareEndpointContextMenu,
+  onReorderEndpoint,
   onQueryChange,
   onRegexEnabledChange,
   onRequestDeleteEndpoint,
@@ -81,14 +127,47 @@ export function EndpointListPanel({
   selectedEndpointId,
   selectedEndpointIds,
 }: EndpointListPanelProps) {
+  const [draggingEndpointId, setDraggingEndpointId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<EndpointDropTarget | null>(null);
+  const hasActiveSearch = Boolean(query.trim());
+  const canReorder = !hasActiveSearch && filteredEndpoints.length > 1;
+  const reorderTooltip = canReorder
+    ? messages.dragToReorder
+    : hasActiveSearch
+      ? messages.clearSearchToReorder
+      : messages.needMultipleEndpointsToReorder;
   const endpointActionTooltipProps = {
     side: "bottom" as const,
     align: "center" as const,
     sideOffset: 7,
   };
 
+  const finishDrag = () => {
+    setDraggingEndpointId(null);
+    setDropTarget(null);
+    onEndpointDragEnd();
+  };
+
+  const commitCurrentDrop = (event: ReactDragEvent<HTMLElement>) => {
+    if (!draggingEndpointId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (dropTarget) {
+      onReorderEndpoint(draggingEndpointId, dropTarget.endpointId, dropTarget.placement);
+    }
+    finishDrag();
+  };
+
   return (
-    <section className="grid h-full min-h-0 min-w-[300px] grid-rows-[auto_minmax(0,1fr)_28px] overflow-hidden bg-[color-mix(in_srgb,var(--panel)_97%,var(--panel-2))]">
+    <section
+      className="grid h-full min-h-0 min-w-[300px] grid-rows-[auto_minmax(0,1fr)_28px] overflow-hidden bg-[color-mix(in_srgb,var(--panel)_97%,var(--panel-2))]"
+      onDragOver={(event) => {
+        if (!draggingEndpointId) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      }}
+      onDrop={commitCurrentDrop}
+    >
       <div className="grid grid-cols-[minmax(0,1fr)_30px] gap-2 border-b border-[var(--border-soft)] px-3 pb-2 pt-2.5">
         <div className="relative min-w-0">
           <Search
@@ -184,97 +263,185 @@ export function EndpointListPanel({
           const contextEndpoints = endpoints.filter((endpoint) => contextEndpointIds.includes(endpoint.id));
           const contextAllEnabled = contextEndpoints.every((endpoint) => endpoint.enabled !== false);
           const contextCount = contextEndpointIds.length;
+          const isDragging = draggingEndpointId === item.id;
+          const itemDropTarget = dropTarget?.endpointId === item.id ? dropTarget : null;
+
+          const updateDropTarget = (event: ReactDragEvent<HTMLElement>) => {
+            if (!canReorder || !draggingEndpointId) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            if (draggingEndpointId === item.id) {
+              setDropTarget(null);
+              return;
+            }
+            const bounds = event.currentTarget.getBoundingClientRect();
+            const placement = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+            if (
+              isNoopEndpointDrop(
+                filteredEndpoints.map((endpoint) => endpoint.id),
+                draggingEndpointId,
+                item.id,
+                placement,
+              )
+            ) {
+              setDropTarget(null);
+              return;
+            }
+            setDropTarget((current) =>
+              current?.endpointId === item.id && current.placement === placement
+                ? current
+                : { endpointId: item.id, placement },
+            );
+          };
+
+          const sortPlaceholder =
+            itemDropTarget && draggingEndpointId ? (
+              <div
+                aria-hidden="true"
+                className="row endpoint-sort-placeholder"
+                data-placement={itemDropTarget.placement}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                }}
+                onDrop={commitCurrentDrop}
+              />
+            ) : null;
+
           return (
-            <ContextMenu key={item.id}>
-              <ContextMenuTrigger
-                className="endpoint-context-trigger"
-                onContextMenu={() => onPrepareEndpointContextMenu(item)}
-              >
-                <div
-                  className={cn(
-                    "row",
-                    item.enabled === false && "disabled",
-                    item.id === selectedEndpointId && "active",
-                    selected && "selected",
-                  )}
+            <div
+              className={cn(
+                "endpoint-sort-item",
+                isDragging && "drag-source",
+                isDragging && dropTarget && "drag-source-collapsed",
+              )}
+              key={item.id}
+            >
+              {itemDropTarget?.placement === "before" ? sortPlaceholder : null}
+              <ContextMenu>
+                <ContextMenuTrigger
+                  className="endpoint-context-trigger"
+                  onContextMenu={() => onPrepareEndpointContextMenu(item)}
                 >
-                  <span
-                    className="row-select"
-                    onClickCapture={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      onEndpointSelectionGesture(item.id, event, !selected);
+                  <div
+                    className={cn(
+                      "row",
+                      item.enabled === false && "disabled",
+                      item.id === selectedEndpointId && "active",
+                      selected && "selected",
+                      isDragging && "endpoint-dragging",
+                    )}
+                    onDragOver={updateDropTarget}
+                    onDrop={commitCurrentDrop}
+                  >
+                    <button
+                      aria-label={reorderTooltip}
+                      className={cn("endpoint-drag-handle", !canReorder && "disabled")}
+                      disabled={!canReorder}
+                      draggable={canReorder}
+                      type="button"
+                      onDragEnd={finishDrag}
+                      onDragStart={(event) => {
+                        if (!canReorder) {
+                          event.preventDefault();
+                          return;
+                        }
+                        event.stopPropagation();
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("application/x-mockkit-endpoint", item.id);
+                        event.dataTransfer.setData("text/plain", item.id);
+                        setDraggingEndpointId(item.id);
+                        onEndpointDragStart(item.id);
+                        const preview = createEndpointDragPreview(event.currentTarget);
+                        if (preview) {
+                          event.dataTransfer.setDragImage(preview, 24, 24);
+                          window.setTimeout(() => preview.remove(), 0);
+                        }
+                      }}
+                    >
+                      <GripVertical aria-hidden="true" size={15} strokeWidth={1.7} />
+                    </button>
+                    <span
+                      className="row-select"
+                      onClickCapture={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onEndpointSelectionGesture(item.id, event, !selected);
+                      }}
+                    >
+                      <Checkbox
+                        aria-label={messages.selectEndpoint(item.name)}
+                        checked={selected}
+                        className="endpoint-row-checkbox"
+                        onCheckedChange={(checked) => onToggleEndpointSelection(item.id, checked === true)}
+                      />
+                    </span>
+                    <button
+                      className="row-hit"
+                      type="button"
+                      onClick={(event) => onEndpointRowClick(item, event)}
+                    >
+                      <span className="row-title">{item.name}</span>
+                      <span className="row-subtitle">{item.overridePath}</span>
+                      {responseMatch ? (
+                        <span className="row-response-match">
+                          <span className="row-response-match-label">
+                            <FileSearch2 size={12} strokeWidth={1.8} />
+                            {responseMatch.caseName}
+                          </span>
+                          <span className="row-response-match-snippet">
+                            {responseMatch.snippet || messages.responseBodyMatch}
+                          </span>
+                        </span>
+                      ) : null}
+                      <Tooltip
+                        content={
+                          item.enabled === false ? messages.disabled : scenario?.name || messages.noResponse
+                        }
+                      >
+                        <Badge
+                          className={cn(
+                            endpointRowBadgeClass,
+                            item.enabled === false &&
+                              "bg-[color-mix(in_srgb,var(--panel-3)_72%,transparent)] text-[var(--muted)]",
+                          )}
+                          variant={item.enabled === false ? "secondary" : "default"}
+                        >
+                          <span className="min-w-0 truncate">
+                            {item.enabled === false
+                              ? messages.disabled
+                              : scenario?.name || messages.noResponse}
+                          </span>
+                        </Badge>
+                      </Tooltip>
+                    </button>
+                  </div>
+                </ContextMenuTrigger>
+                <ContextMenuContent className="app-context-menu">
+                  <ContextMenuItem onClick={() => onRevealEndpointDirectory(item)}>
+                    {messages.revealInDirectory}
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    onClick={() => onSetEndpointIdsEnabled(contextEndpointIds, !contextAllEnabled)}
+                  >
+                    {contextAllEnabled ? messages.disable : messages.enable}
+                    {messages.endpointNoun(contextCount)}
+                  </ContextMenuItem>
+                  <ContextMenuItem
+                    onClick={() => {
+                      navigator.clipboard?.writeText(item.overridePath);
+                      sonnerToast.success(messages.copiedEndpointPath);
                     }}
                   >
-                    <Checkbox
-                      aria-label={messages.selectEndpoint(item.name)}
-                      checked={selected}
-                      className="endpoint-row-checkbox"
-                      onCheckedChange={(checked) => onToggleEndpointSelection(item.id, checked === true)}
-                    />
-                  </span>
-                  <button
-                    className="row-hit"
-                    type="button"
-                    onClick={(event) => onEndpointRowClick(item, event)}
-                  >
-                    <span className="row-title">{item.name}</span>
-                    <span className="row-subtitle">{item.overridePath}</span>
-                    {responseMatch ? (
-                      <span className="row-response-match">
-                        <span className="row-response-match-label">
-                          <FileSearch2 size={12} strokeWidth={1.8} />
-                          {responseMatch.caseName}
-                        </span>
-                        <span className="row-response-match-snippet">
-                          {responseMatch.snippet || messages.responseBodyMatch}
-                        </span>
-                      </span>
-                    ) : null}
-                    <Tooltip
-                      content={
-                        item.enabled === false ? messages.disabled : scenario?.name || messages.noResponse
-                      }
-                    >
-                      <Badge
-                        className={cn(
-                          endpointRowBadgeClass,
-                          item.enabled === false &&
-                            "bg-[color-mix(in_srgb,var(--panel-3)_72%,transparent)] text-[var(--muted)]",
-                        )}
-                        variant={item.enabled === false ? "secondary" : "default"}
-                      >
-                        <span className="min-w-0 truncate">
-                          {item.enabled === false ? messages.disabled : scenario?.name || messages.noResponse}
-                        </span>
-                      </Badge>
-                    </Tooltip>
-                  </button>
-                </div>
-              </ContextMenuTrigger>
-              <ContextMenuContent className="app-context-menu">
-                <ContextMenuItem onClick={() => onRevealEndpointDirectory(item)}>
-                  {messages.revealInDirectory}
-                </ContextMenuItem>
-                <ContextMenuItem
-                  onClick={() => onSetEndpointIdsEnabled(contextEndpointIds, !contextAllEnabled)}
-                >
-                  {contextAllEnabled ? messages.disable : messages.enable}
-                  {messages.endpointNoun(contextCount)}
-                </ContextMenuItem>
-                <ContextMenuItem
-                  onClick={() => {
-                    navigator.clipboard?.writeText(item.overridePath);
-                    sonnerToast.success(messages.copiedEndpointPath);
-                  }}
-                >
-                  {messages.copyEndpointPath}
-                </ContextMenuItem>
-                <ContextMenuItem variant="destructive" onClick={() => onRequestDeleteEndpoint(item)}>
-                  {messages.deleteEndpoint(contextCount)}
-                </ContextMenuItem>
-              </ContextMenuContent>
-            </ContextMenu>
+                    {messages.copyEndpointPath}
+                  </ContextMenuItem>
+                  <ContextMenuItem variant="destructive" onClick={() => onRequestDeleteEndpoint(item)}>
+                    {messages.deleteEndpoint(contextCount)}
+                  </ContextMenuItem>
+                </ContextMenuContent>
+              </ContextMenu>
+              {itemDropTarget?.placement === "after" ? sortPlaceholder : null}
+            </div>
           );
         })}
       </ScrollArea>
